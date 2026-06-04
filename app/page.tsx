@@ -38,6 +38,8 @@ const TIMER_OPTIONS = [
   { label: '90分钟', minutes: 90 },
 ]
 
+const SPEED_OPTIONS = [0.75, 1, 1.25, 1.5, 2]
+
 const channels: Channel[] = channelsData
 
 function formatTime(s: number) {
@@ -70,6 +72,10 @@ export default function Home() {
   const [transcriptLoading, setTranscriptLoading] = useState(false)
   const [transcriptError, setTranscriptError] = useState<string | null>(null)
   const [transcriptVideoId, setTranscriptVideoId] = useState<string | null>(null)
+  const [playbackRate, setPlaybackRate] = useState(1)
+  const [favorites, setFavorites] = useState<Set<string>>(new Set())
+  const [videoProgress, setVideoProgress] = useState<Record<string, number>>({})
+  const [filter, setFilter] = useState<'all' | 'inprogress' | 'done'>('all')
 
   const playerRef = useRef<YT.Player | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -77,6 +83,9 @@ export default function Home() {
   const seekingRef = useRef(false)
   const transcriptListRef = useRef<HTMLDivElement>(null)
   const userScrollingRef = useRef(false)
+  const savedPosRef = useRef(0)
+  const currentIdRef = useRef<string | null>(null)
+  const lastProgressSaveRef = useRef(0)
 
   const activeChannel = channels.find(c => c.id === activeChannelId) ?? channels[0]
   const videos = channelVideos[activeChannelId] ?? []
@@ -100,6 +109,43 @@ export default function Home() {
     document.head.appendChild(tag)
   }, [])
 
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('podcast-favorites')
+      if (saved) setFavorites(new Set(JSON.parse(saved)))
+    } catch {}
+    const prog: Record<string, number> = {}
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i)
+      if (key?.startsWith('podcast-pos-')) {
+        try {
+          const data = JSON.parse(localStorage.getItem(key) || '{}')
+          if (data.pos > 0 && data.dur > 0) {
+            prog[key.replace('podcast-pos-', '')] = data.pos / data.dur
+          }
+        } catch {}
+      }
+    }
+    setVideoProgress(prog)
+  }, [])
+
+  const saveProgress = useCallback((id: string, cur: number, dur: number) => {
+    if (cur < 5 || dur <= 0) return
+    localStorage.setItem(`podcast-pos-${id}`, JSON.stringify({ pos: Math.floor(cur), dur: Math.floor(dur) }))
+    setVideoProgress(prev => ({ ...prev, [id]: cur / dur }))
+  }, [])
+
+  useEffect(() => {
+    const onHide = () => {
+      if (!currentIdRef.current || !playerRef.current) return
+      try {
+        saveProgress(currentIdRef.current, playerRef.current.getCurrentTime() || 0, playerRef.current.getDuration() || 0)
+      } catch {}
+    }
+    document.addEventListener('visibilitychange', onHide)
+    return () => document.removeEventListener('visibilitychange', onHide)
+  }, [saveProgress])
+
   const startPolling = useCallback(() => {
     if (pollRef.current) clearInterval(pollRef.current)
     pollRef.current = setInterval(() => {
@@ -112,13 +158,19 @@ export default function Home() {
         setElapsed(cur)
         setDuration(dur)
         setProgress(dur > 0 ? cur / dur : 0)
+        if (currentIdRef.current && cur - lastProgressSaveRef.current >= 5) {
+          lastProgressSaveRef.current = cur
+          saveProgress(currentIdRef.current, cur, dur)
+        }
       } catch {}
     }, 500)
-  }, [])
+  }, [saveProgress])
 
   function createPlayer(videoId: string) {
     if (playerRef.current) {
       playerRef.current.loadVideoById(videoId)
+      playerRef.current.setPlaybackRate(playbackRate)
+      if (savedPosRef.current > 5) playerRef.current.seekTo(savedPosRef.current, true)
       setPlaying(true)
       return
     }
@@ -127,6 +179,8 @@ export default function Home() {
       playerVars: { autoplay: 1, controls: 0, playsinline: 1, rel: 0 },
       events: {
         onReady: (e: YT.PlayerEvent) => {
+          if (savedPosRef.current > 5) e.target.seekTo(savedPosRef.current, true)
+          e.target.setPlaybackRate(playbackRate)
           e.target.playVideo()
           setPlaying(true)
           startPolling()
@@ -140,6 +194,12 @@ export default function Home() {
   }
 
   function play(video: Video) {
+    currentIdRef.current = video.id
+    lastProgressSaveRef.current = 0
+    try {
+      const data = JSON.parse(localStorage.getItem(`podcast-pos-${video.id}`) || '{}')
+      savedPosRef.current = data.pos || 0
+    } catch { savedPosRef.current = 0 }
     setCurrent(video)
     setProgress(0); setElapsed(0); setDuration(0)
     if (!(window as any).YT?.Player) {
@@ -188,6 +248,23 @@ export default function Home() {
         setTimeLeft(null); setTimerMinutes(0)
       }
     }, 1000)
+  }
+
+  function cycleSpeed() {
+    const idx = SPEED_OPTIONS.indexOf(playbackRate)
+    const next = SPEED_OPTIONS[(idx + 1) % SPEED_OPTIONS.length]
+    setPlaybackRate(next)
+    playerRef.current?.setPlaybackRate(next)
+  }
+
+  function toggleFavorite(videoId: string, e: React.MouseEvent) {
+    e.stopPropagation()
+    setFavorites(prev => {
+      const next = new Set(prev)
+      next.has(videoId) ? next.delete(videoId) : next.add(videoId)
+      localStorage.setItem('podcast-favorites', JSON.stringify([...next]))
+      return next
+    })
   }
 
   async function openTranscript(video: Video) {
@@ -277,8 +354,20 @@ export default function Home() {
 
         <div className="h-px mx-5" style={{ background: 'var(--separator)' }} />
 
-        <div className="px-5 pt-5 pb-2">
+        <div className="px-5 pt-5 pb-3 flex items-center justify-between">
           <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-secondary)' }}>节目</span>
+          <div className="flex gap-1">
+            {(['all', 'inprogress', 'done'] as const).map(f => (
+              <button key={f} onClick={() => setFilter(f)}
+                className="text-xs px-2.5 py-1 rounded-full transition-colors"
+                style={{
+                  background: filter === f ? accentColor : 'var(--bg-raised)',
+                  color: filter === f ? 'white' : 'var(--text-secondary)',
+                }}>
+                {f === 'all' ? '全部' : f === 'inprogress' ? '进行中' : '已听完'}
+              </button>
+            ))}
+          </div>
         </div>
 
         {videos.length === 0 && (
@@ -286,49 +375,70 @@ export default function Home() {
         )}
 
         <div>
-          {videos.map((video) => {
+          {videos.filter(v => {
+            if (filter === 'all') return true
+            const p = videoProgress[v.id] ?? 0
+            return filter === 'inprogress' ? p > 0 && p < 0.97 : p >= 0.97
+          }).map((video) => {
             const isActive = current?.id === video.id
+            const isFav = favorites.has(video.id)
             return (
-              <button
-                key={video.id}
-                onClick={() => play(video)}
-                className="w-full px-5 py-4 flex items-start gap-4 text-left transition-colors"
-                style={{ background: 'transparent' }}
-                onMouseEnter={e => (e.currentTarget.style.background = 'var(--hover)')}
-                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-              >
-                <div className="relative flex-shrink-0">
-                  <img src={video.thumbnail} alt="" className="w-14 h-14 rounded-xl object-cover"
-                    style={{ background: 'var(--bg-raised)' }} />
-                  {isActive && (
-                    <div className="absolute inset-0 rounded-xl flex items-center justify-center"
-                      style={{ background: `${accentColor}99` }}>
-                      <svg width="20" height="20" viewBox="0 0 24 24" fill="white">
-                        {playing
-                          ? <><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></>
-                          : <path d="M8 5v14l11-7z"/>}
-                      </svg>
-                    </div>
-                  )}
+              <div key={video.id} className="relative">
+                <div
+                  onClick={() => play(video)}
+                  className="w-full px-5 py-4 flex items-start gap-4 cursor-pointer transition-colors"
+                  style={{ background: 'transparent' }}
+                  onMouseEnter={e => (e.currentTarget.style.background = 'var(--hover)')}
+                  onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                >
+                  <div className="relative flex-shrink-0">
+                    <img src={video.thumbnail} alt="" className="w-14 h-14 rounded-xl object-cover"
+                      style={{ background: 'var(--bg-raised)' }} />
+                    {!isActive && (videoProgress[video.id] ?? 0) >= 0.97 && (
+                      <div className="absolute top-1 right-1 w-4 h-4 rounded-full flex items-center justify-center" style={{ background: accentColor }}>
+                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3.5">
+                          <polyline points="20 6 9 17 4 12"/>
+                        </svg>
+                      </div>
+                    )}
+                    {isActive && (
+                      <div className="absolute inset-0 rounded-xl flex items-center justify-center"
+                        style={{ background: `${accentColor}99` }}>
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="white">
+                          {playing
+                            ? <><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></>
+                            : <path d="M8 5v14l11-7z"/>}
+                        </svg>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0 pt-0.5 pr-8">
+                    <p className="text-sm font-medium leading-snug line-clamp-2"
+                      style={{ color: isActive ? accentColor : 'var(--text-primary)' }}>
+                      {video.title}
+                    </p>
+                    <p className="text-xs mt-1.5" style={{ color: 'var(--text-secondary)' }}>
+                      {formatDate(video.published)}
+                    </p>
+                  </div>
                 </div>
-                <div className="flex-1 min-w-0 pt-0.5">
-                  <p className="text-sm font-medium leading-snug line-clamp-2"
-                    style={{ color: isActive ? accentColor : 'var(--text-primary)' }}>
-                    {video.title}
-                  </p>
-                  <p className="text-xs mt-1.5" style={{ color: 'var(--text-secondary)' }}>
-                    {formatDate(video.published)}
-                  </p>
-                </div>
-                {!isActive && (
-                  <div className="flex-shrink-0 pt-1">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text-tertiary)" strokeWidth="2">
-                      <circle cx="12" cy="12" r="10"/>
-                      <path d="M10 8l6 4-6 4V8z" fill="var(--text-tertiary)" stroke="none"/>
-                    </svg>
+                <button
+                  onClick={(e) => toggleFavorite(video.id, e)}
+                  className="absolute right-5 top-4 p-1 active:opacity-60"
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24"
+                    fill={isFav ? accentColor : 'none'}
+                    stroke={isFav ? accentColor : 'var(--text-tertiary)'}
+                    strokeWidth="2">
+                    <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+                  </svg>
+                </button>
+                {!isActive && videoProgress[video.id] > 0 && videoProgress[video.id] < 0.97 && (
+                  <div className="absolute bottom-0 left-0 right-0 h-0.5" style={{ background: 'var(--separator)' }}>
+                    <div className="h-full" style={{ width: `${Math.round(videoProgress[video.id] * 100)}%`, background: accentColor }} />
                   </div>
                 )}
-              </button>
+              </div>
             )
           })}
         </div>
@@ -407,16 +517,18 @@ export default function Home() {
           </div>
 
           <div className="px-4 py-3 flex items-center gap-4">
-            <img src={current.thumbnail} alt="" className="w-11 h-11 rounded-lg object-cover flex-shrink-0" />
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium truncate" style={{ color: 'var(--text-primary)' }}>{current.title}</p>
-              <p className="text-xs mt-0.5" style={{ color: 'var(--text-secondary)' }}>
-                {formatTime(elapsed)} / {formatTime(duration)}
-                {timeLeft !== null && (
-                  <span style={{ color: accentColor }}> · {formatTime(timeLeft)} 后停止</span>
-                )}
-              </p>
-            </div>
+            <button onClick={() => current && openTranscript(current)} className="flex items-center gap-4 flex-1 min-w-0 text-left active:opacity-70">
+              <img src={current.thumbnail} alt="" className="w-11 h-11 rounded-lg object-cover flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium truncate" style={{ color: 'var(--text-primary)' }}>{current.title}</p>
+                <p className="text-xs mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+                  {formatTime(elapsed)} / {formatTime(duration)}
+                  {timeLeft !== null && (
+                    <span style={{ color: accentColor }}> · {formatTime(timeLeft)} 后停止</span>
+                  )}
+                </p>
+              </div>
+            </button>
             <div className="flex items-center gap-4 flex-shrink-0">
               <button onClick={() => skip(-15)} className="active:opacity-60" style={{ color: 'var(--text-secondary)' }}>
                 <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor">
@@ -511,6 +623,9 @@ export default function Home() {
                     : <path d="M8 5v14l11-7z"/>}
                 </svg>
               </div>
+            </button>
+            <button onClick={cycleSpeed} className="flex-shrink-0 active:opacity-60 w-10 text-center">
+              <span className="text-xs font-bold" style={{ color: accentColor }}>{playbackRate}x</span>
             </button>
           </div>
 
