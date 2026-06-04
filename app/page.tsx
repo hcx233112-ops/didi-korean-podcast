@@ -82,7 +82,6 @@ export default function Home() {
   const videos = channelVideos[activeChannelId] ?? []
   const accentColor = activeChannel.color
 
-  // Load videos for a channel
   useEffect(() => {
     if (channelVideos[activeChannelId]) return
     fetch(`/data/videos/${activeChannelId}.json`)
@@ -93,7 +92,6 @@ export default function Home() {
       .catch(console.error)
   }, [activeChannelId])
 
-  // Load YouTube IFrame API
   useEffect(() => {
     if (document.getElementById('yt-iframe-api')) return
     const tag = document.createElement('script')
@@ -233,7 +231,7 @@ export default function Home() {
   const filled = `${Math.round(progress * 100)}%`
 
   return (
-    <div className="flex flex-col h-dvh bg-black overflow-hidden">
+    <div className="flex flex-col h-dvh overflow-hidden" style={{ background: 'var(--bg)' }}>
       {/* Hidden YouTube player */}
       <div className="fixed -top-full -left-full w-1 h-1 overflow-hidden">
         <div id="yt-player" />
@@ -244,7 +242,6 @@ export default function Home() {
 
         {/* Channel header */}
         <div className="px-5 pt-12 pb-6">
-          {/* Artwork — tappable to switch channel */}
           <button
             onClick={() => channels.length > 1 && setShowChannelPicker(true)}
             className="block mb-4"
@@ -255,15 +252,20 @@ export default function Home() {
             </div>
           </button>
 
-          <h1 className="text-2xl font-bold text-white leading-tight">{activeChannel.name}</h1>
+          <h1 className="text-2xl font-bold leading-tight" style={{ color: 'var(--text-primary)' }}>
+            {activeChannel.name}
+          </h1>
           <p className="text-sm mt-1" style={{ color: accentColor }}>{activeChannel.description}</p>
-          <p className="text-xs text-gray-500 mt-2">{videos.length} 个节目</p>
+          <p className="text-xs mt-2" style={{ color: 'var(--text-tertiary)' }}>{videos.length} 个节目</p>
 
-          {/* Channel switcher button */}
           {channels.length > 1 && (
             <button
               onClick={() => setShowChannelPicker(true)}
-              className="mt-3 flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border border-white/15 text-gray-400 hover:text-white transition-colors"
+              className="mt-3 flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border transition-colors"
+              style={{
+                borderColor: 'var(--separator)',
+                color: 'var(--text-secondary)',
+              }}
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>
@@ -273,18 +275,16 @@ export default function Home() {
           )}
         </div>
 
-        <div className="h-px bg-white/10 mx-5" />
+        <div className="h-px mx-5" style={{ background: 'var(--separator)' }} />
 
         <div className="px-5 pt-5 pb-2">
-          <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">节目</span>
+          <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-secondary)' }}>节目</span>
         </div>
 
-        {/* Loading state */}
         {videos.length === 0 && (
-          <div className="px-5 py-10 text-center text-gray-600 text-sm">加载中...</div>
+          <div className="px-5 py-10 text-center text-sm" style={{ color: 'var(--text-tertiary)' }}>加载中...</div>
         )}
 
-        {/* Episodes */}
         <div>
           {videos.map((video) => {
             const isActive = current?.id === video.id
@@ -292,10 +292,14 @@ export default function Home() {
               <button
                 key={video.id}
                 onClick={() => play(video)}
-                className="w-full px-5 py-4 flex items-start gap-4 text-left active:bg-white/5 transition-colors"
+                className="w-full px-5 py-4 flex items-start gap-4 text-left transition-colors"
+                style={{ background: 'transparent' }}
+                onMouseEnter={e => (e.currentTarget.style.background = 'var(--hover)')}
+                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
               >
                 <div className="relative flex-shrink-0">
-                  <img src={video.thumbnail} alt="" className="w-14 h-14 rounded-xl object-cover bg-gray-800" />
+                  <img src={video.thumbnail} alt="" className="w-14 h-14 rounded-xl object-cover"
+                    style={{ background: 'var(--bg-raised)' }} />
                   {isActive && (
                     <div className="absolute inset-0 rounded-xl flex items-center justify-center"
                       style={{ background: `${accentColor}99` }}>
@@ -309,16 +313,18 @@ export default function Home() {
                 </div>
                 <div className="flex-1 min-w-0 pt-0.5">
                   <p className="text-sm font-medium leading-snug line-clamp-2"
-                    style={{ color: isActive ? accentColor : '#f3f4f6' }}>
+                    style={{ color: isActive ? accentColor : 'var(--text-primary)' }}>
                     {video.title}
                   </p>
-                  <p className="text-xs text-gray-500 mt-1.5">{formatDate(video.published)}</p>
+                  <p className="text-xs mt-1.5" style={{ color: 'var(--text-secondary)' }}>
+                    {formatDate(video.published)}
+                  </p>
                 </div>
                 {!isActive && (
                   <div className="flex-shrink-0 pt-1">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6b7280" strokeWidth="2">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text-tertiary)" strokeWidth="2">
                       <circle cx="12" cy="12" r="10"/>
-                      <path d="M10 8l6 4-6 4V8z" fill="#6b7280" stroke="none"/>
+                      <path d="M10 8l6 4-6 4V8z" fill="var(--text-tertiary)" stroke="none"/>
                     </svg>
                   </div>
                 )}
@@ -332,21 +338,23 @@ export default function Home() {
 
       {/* Channel picker sheet */}
       {showChannelPicker && (
-        <div className="fixed inset-0 z-50 flex items-end" onClick={() => setShowChannelPicker(false)}>
-          <div className="w-full rounded-t-3xl p-6 pb-10" style={{ background: '#1c1c1e' }}
+        <div className="fixed inset-0 z-50 flex items-end" onClick={() => setShowChannelPicker(false)}
+          style={{ background: 'rgba(0,0,0,0.4)' }}>
+          <div className="w-full rounded-t-3xl p-6 pb-10" style={{ background: 'var(--bg-card)' }}
             onClick={e => e.stopPropagation()}>
-            <div className="w-10 h-1 rounded-full bg-gray-600 mx-auto mb-6" />
-            <p className="text-lg font-semibold text-white mb-5">选择博主</p>
+            <div className="w-10 h-1 rounded-full mx-auto mb-6" style={{ background: 'var(--separator)' }} />
+            <p className="text-lg font-semibold mb-5" style={{ color: 'var(--text-primary)' }}>选择博主</p>
             {channels.map(ch => (
               <button key={ch.id} onClick={() => switchChannel(ch.id)}
-                className="w-full flex items-center gap-4 py-3 border-b border-white/10 last:border-0">
+                className="w-full flex items-center gap-4 py-3 border-b last:border-0"
+                style={{ borderColor: 'var(--separator)' }}>
                 <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
                   style={{ background: `linear-gradient(135deg, ${ch.color} 0%, #5e5ce6 100%)` }}>
                   <span className="text-lg font-bold text-white">{ch.initial}</span>
                 </div>
                 <div className="flex-1 text-left">
-                  <p className="text-sm font-medium text-white">{ch.name}</p>
-                  <p className="text-xs text-gray-500">{ch.description}</p>
+                  <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>{ch.name}</p>
+                  <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>{ch.description}</p>
                 </div>
                 {activeChannelId === ch.id && (
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={ch.color} strokeWidth="2.5">
@@ -361,15 +369,17 @@ export default function Home() {
 
       {/* Timer sheet */}
       {showTimer && (
-        <div className="fixed inset-0 z-40 flex items-end" onClick={() => setShowTimer(false)}>
-          <div className="w-full rounded-t-3xl p-6 pb-10" style={{ background: '#1c1c1e' }}
+        <div className="fixed inset-0 z-40 flex items-end" onClick={() => setShowTimer(false)}
+          style={{ background: 'rgba(0,0,0,0.4)' }}>
+          <div className="w-full rounded-t-3xl p-6 pb-10" style={{ background: 'var(--bg-card)' }}
             onClick={e => e.stopPropagation()}>
-            <div className="w-10 h-1 rounded-full bg-gray-600 mx-auto mb-6" />
-            <p className="text-lg font-semibold text-white mb-5">定时停止播放</p>
+            <div className="w-10 h-1 rounded-full mx-auto mb-6" style={{ background: 'var(--separator)' }} />
+            <p className="text-lg font-semibold mb-5" style={{ color: 'var(--text-primary)' }}>定时停止播放</p>
             {TIMER_OPTIONS.map(opt => (
               <button key={opt.minutes} onClick={() => startTimer(opt.minutes)}
-                className="w-full flex items-center justify-between py-4 border-b border-white/10 last:border-0">
-                <span className="text-base text-white">{opt.label}</span>
+                className="w-full flex items-center justify-between py-4 border-b last:border-0"
+                style={{ borderColor: 'var(--separator)' }}>
+                <span className="text-base" style={{ color: 'var(--text-primary)' }}>{opt.label}</span>
                 {timerMinutes === opt.minutes && (
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={accentColor} strokeWidth="2.5">
                     <polyline points="20 6 9 17 4 12"/>
@@ -383,8 +393,8 @@ export default function Home() {
 
       {/* Mini Player */}
       {current && (
-        <div className="fixed bottom-0 left-0 right-0 z-30" style={{ background: '#1c1c1e' }}>
-          <div className="relative h-0.5 bg-white/15">
+        <div className="fixed bottom-0 left-0 right-0 z-30" style={{ background: 'var(--bg-card)' }}>
+          <div className="relative h-0.5" style={{ background: 'var(--separator)' }}>
             <div className="absolute top-0 left-0 h-full" style={{ width: filled, background: accentColor }} />
             <input type="range" min="0" max="1" step="0.001" value={progress}
               onMouseDown={() => { seekingRef.current = true; setSeeking(true) }}
@@ -399,8 +409,8 @@ export default function Home() {
           <div className="px-4 py-3 flex items-center gap-4">
             <img src={current.thumbnail} alt="" className="w-11 h-11 rounded-lg object-cover flex-shrink-0" />
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-white truncate">{current.title}</p>
-              <p className="text-xs text-gray-500 mt-0.5">
+              <p className="text-sm font-medium truncate" style={{ color: 'var(--text-primary)' }}>{current.title}</p>
+              <p className="text-xs mt-0.5" style={{ color: 'var(--text-secondary)' }}>
                 {formatTime(elapsed)} / {formatTime(duration)}
                 {timeLeft !== null && (
                   <span style={{ color: accentColor }}> · {formatTime(timeLeft)} 后停止</span>
@@ -408,7 +418,7 @@ export default function Home() {
               </p>
             </div>
             <div className="flex items-center gap-4 flex-shrink-0">
-              <button onClick={() => skip(-15)} className="text-gray-300 active:text-white">
+              <button onClick={() => skip(-15)} className="active:opacity-60" style={{ color: 'var(--text-secondary)' }}>
                 <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/>
                   <text x="8" y="15" fontSize="5" fill="currentColor" fontWeight="bold">15</text>
@@ -423,7 +433,7 @@ export default function Home() {
                   </svg>
                 </div>
               </button>
-              <button onClick={() => skip(15)} className="text-gray-300 active:text-white">
+              <button onClick={() => skip(15)} className="active:opacity-60" style={{ color: 'var(--text-secondary)' }}>
                 <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M12 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6h2c0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8z"/>
                   <text x="8" y="15" fontSize="5" fill="currentColor" fontWeight="bold">15</text>
@@ -431,7 +441,7 @@ export default function Home() {
               </button>
               <button onClick={() => setShowTimer(true)} className="active:opacity-60">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
-                  stroke={timerMinutes > 0 ? accentColor : '#6b7280'} strokeWidth="2">
+                  stroke={timerMinutes > 0 ? accentColor : 'var(--text-tertiary)'} strokeWidth="2">
                   <circle cx="12" cy="13" r="8"/>
                   <path d="M12 9v4l3 3"/>
                   <path d="M9 3h6M12 3v2"/>
@@ -439,7 +449,7 @@ export default function Home() {
               </button>
               <button onClick={() => current && openTranscript(current)} className="active:opacity-60">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
-                  stroke={showTranscript ? accentColor : '#6b7280'} strokeWidth="2">
+                  stroke={showTranscript ? accentColor : 'var(--text-tertiary)'} strokeWidth="2">
                   <rect x="3" y="5" width="18" height="14" rx="2"/>
                   <line x1="7" y1="9" x2="17" y2="9"/>
                   <line x1="7" y1="13" x2="17" y2="13"/>
@@ -454,9 +464,10 @@ export default function Home() {
 
       {/* Transcript Sheet */}
       {showTranscript && current && (
-        <div className="fixed inset-0 z-50 flex flex-col" style={{ background: '#000' }}>
+        <div className="fixed inset-0 z-50 flex flex-col" style={{ background: 'var(--bg)' }}>
           {/* Header */}
-          <div className="flex items-center justify-between px-5 pt-14 pb-4 border-b border-white/10 flex-shrink-0">
+          <div className="flex items-center justify-between px-5 pt-14 pb-4 flex-shrink-0"
+            style={{ borderBottom: '1px solid var(--separator)' }}>
             <button
               onClick={() => setShowTranscript(false)}
               className="text-sm font-medium active:opacity-60"
@@ -465,17 +476,17 @@ export default function Home() {
               关闭
             </button>
             <div className="text-center">
-              <span className="text-sm font-semibold text-white">字幕</span>
-              <p className="text-xs text-gray-500 mt-0.5">한국어</p>
+              <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>字幕</span>
+              <p className="text-xs mt-0.5" style={{ color: 'var(--text-secondary)' }}>한국어</p>
             </div>
             {/* Translation toggle */}
             <button
               onClick={() => setShowTranslation(v => !v)}
               className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border transition-colors"
               style={{
-                borderColor: showTranslation ? accentColor : 'rgba(255,255,255,0.15)',
+                borderColor: showTranslation ? accentColor : 'var(--separator)',
                 background: showTranslation ? `${accentColor}22` : 'transparent',
-                color: showTranslation ? accentColor : '#9ca3af',
+                color: showTranslation ? accentColor : 'var(--text-secondary)',
               }}
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -488,10 +499,10 @@ export default function Home() {
           </div>
 
           {/* Now playing mini bar */}
-          <div className="px-5 py-3 flex items-center gap-3 border-b border-white/10 flex-shrink-0"
-            style={{ background: '#111' }}>
+          <div className="px-5 py-3 flex items-center gap-3 flex-shrink-0"
+            style={{ background: 'var(--bg-raised)', borderBottom: '1px solid var(--separator)' }}>
             <img src={current.thumbnail} alt="" className="w-9 h-9 rounded-lg object-cover flex-shrink-0" />
-            <p className="text-xs text-gray-400 truncate flex-1">{current.title}</p>
+            <p className="text-xs truncate flex-1" style={{ color: 'var(--text-secondary)' }}>{current.title}</p>
             <button onClick={togglePlay} className="flex-shrink-0">
               <div className="w-7 h-7 rounded-full flex items-center justify-center" style={{ background: accentColor }}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="white">
@@ -511,10 +522,10 @@ export default function Home() {
             onTouchEnd={() => { setTimeout(() => { userScrollingRef.current = false }, 3000) }}
           >
             {transcriptLoading && (
-              <p className="text-center text-gray-500 py-20">加载字幕中...</p>
+              <p className="text-center py-20 text-sm" style={{ color: 'var(--text-tertiary)' }}>加载字幕中...</p>
             )}
             {transcriptError && (
-              <p className="text-center text-gray-500 py-20">{transcriptError}</p>
+              <p className="text-center py-20 text-sm" style={{ color: 'var(--text-tertiary)' }}>{transcriptError}</p>
             )}
             {transcriptSegs.map((seg, i) => {
               const isActive = i === currentSegIdx
@@ -526,13 +537,13 @@ export default function Home() {
                     playerRef.current?.seekTo(seg.start, true)
                     if (!playing) playerRef.current?.playVideo()
                   }}
-                  className="w-full text-left mb-1 px-3 py-2 rounded-xl transition-colors active:bg-white/5"
-                  style={isActive ? { background: '#1c1c1e' } : {}}
+                  className="w-full text-left mb-1 px-3 py-2 rounded-xl transition-colors"
+                  style={{ background: isActive ? 'var(--bg-card)' : 'transparent' }}
                 >
                   <p
                     className="leading-relaxed transition-all"
                     style={{
-                      color: isActive ? '#fff' : '#6b7280',
+                      color: isActive ? 'var(--text-primary)' : 'var(--text-tertiary)',
                       fontWeight: isActive ? 600 : 400,
                       fontSize: isActive ? '17px' : '15px',
                     }}
@@ -543,7 +554,7 @@ export default function Home() {
                     <p
                       className="leading-relaxed mt-1 transition-all"
                       style={{
-                        color: isActive ? accentColor : '#4b5563',
+                        color: isActive ? accentColor : 'var(--text-tertiary)',
                         fontSize: isActive ? '14px' : '13px',
                         fontWeight: isActive ? 500 : 400,
                       }}
@@ -558,10 +569,10 @@ export default function Home() {
           </div>
 
           {/* Progress bar at bottom */}
-          <div className="flex-shrink-0 px-5 pb-8 pt-3 border-t border-white/10" style={{ background: '#000' }}>
-            <div className="flex items-center gap-3 text-xs text-gray-500 mb-2">
+          <div className="flex-shrink-0 px-5 pb-8 pt-3" style={{ background: 'var(--bg)', borderTop: '1px solid var(--separator)' }}>
+            <div className="flex items-center gap-3 text-xs mb-2" style={{ color: 'var(--text-secondary)' }}>
               <span>{formatTime(elapsed)}</span>
-              <div className="flex-1 relative h-1 bg-white/15 rounded-full">
+              <div className="flex-1 relative h-1 rounded-full" style={{ background: 'var(--separator)' }}>
                 <div className="absolute top-0 left-0 h-full rounded-full" style={{ width: filled, background: accentColor }} />
               </div>
               <span>{formatTime(duration)}</span>
