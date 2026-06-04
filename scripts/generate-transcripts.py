@@ -5,6 +5,8 @@
 """
 
 import json, os, time, sys
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
 from pathlib import Path
 from youtube_transcript_api import YouTubeTranscriptApi
 from deep_translator import GoogleTranslator
@@ -18,7 +20,7 @@ CHANNELS_DIR = ROOT / "public" / "data" / "videos"
 def load_all_videos():
     videos = []
     for f in CHANNELS_DIR.glob("*.json"):
-        data = json.loads(f.read_text())
+        data = json.loads(f.read_text(encoding="utf-8"))
         videos.extend(data.get("videos", []))
     seen = set()
     unique = []
@@ -55,7 +57,7 @@ def generate(video_id, title):
     except Exception as e:
         err_msg = str(e)
         if "No transcripts" in err_msg or "Could not find" in err_msg:
-            out.write_text(json.dumps({"videoId": video_id, "segments": [], "error": "no_transcript"}, ensure_ascii=False))
+            out.write_text(json.dumps({"videoId": video_id, "segments": [], "error": "no_transcript"}, ensure_ascii=False), encoding="utf-8")
             return "no_transcript"
         raise
 
@@ -74,7 +76,7 @@ def generate(video_id, title):
             for s, ko, zh in zip(segments, ko_texts, zh_texts)
         ],
     }
-    out.write_text(json.dumps(result, ensure_ascii=False, indent=2))
+    out.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     return "ok"
 
 def main():
