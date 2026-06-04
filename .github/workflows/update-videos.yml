@@ -21,13 +21,12 @@ jobs:
           API_KEY = os.environ["YOUTUBE_API_KEY"]
 
           PLAYLISTS = [
-              "PLekI352WvEBMOwwGb0-XUsjW3f-IWhpy5",
-              "PLekI352WvEBNkSjppsgn_t73uUsgSwNP3",
-              "PLekI352WvEBOfwVes4ydf5MVyYkmlcfzo",
-              "PLekI352WvEBOzieG5X5SzFhL72eix2EGX",
-              "PLekI352WvEBPAgoMY2dl5_5Ml37M9nSLZ",
-              "PLekI352WvEBPhAcLdV-4pvZOB3AzAE7T4",
-              "UUjI0A18uEH8ivCRsbO9cI6w",
+              "PLekI352WvEBMOwwGb0-XUsjW3f-IWhpy5",  # Korean Culture Podcast
+              "PLekI352WvEBNkSjppsgn_t73uUsgSwNP3",  # Audio Book
+              "PLekI352WvEBOfwVes4ydf5MVyYkmlcfzo",  # Global Guest Interview
+              "PLekI352WvEBOzieG5X5SzFhL72eix2EGX",  # Live Stream
+              "PLekI352WvEBPAgoMY2dl5_5Ml37M9nSLZ",  # Natural Korean Conversation
+              "PLekI352WvEBPhAcLdV-4pvZOB3AzAE7T4",  # Korean News
           ]
 
           def fetch_playlist(pl_id):
