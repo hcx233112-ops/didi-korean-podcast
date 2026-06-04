@@ -2,9 +2,9 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Didi Korean Podcast",
-  description: "Didi Korean Podcast 播客播放器，锁屏不断播",
-  appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "Didi Podcast" },
+  title: "播客收藏",
+  description: "我的播客收藏，锁屏不断播",
+  appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "播客收藏" },
 };
 
 export const viewport: Viewport = {

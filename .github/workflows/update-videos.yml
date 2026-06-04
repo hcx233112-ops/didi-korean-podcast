@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Fetch all videos via YouTube API
+      - name: Fetch videos for all channels
         env:
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
         run: |
@@ -19,15 +19,6 @@ jobs:
           import json, urllib.request, urllib.parse, os
 
           API_KEY = os.environ["YOUTUBE_API_KEY"]
-
-          PLAYLISTS = [
-              "PLekI352WvEBMOwwGb0-XUsjW3f-IWhpy5",  # Korean Culture Podcast
-              "PLekI352WvEBNkSjppsgn_t73uUsgSwNP3",  # Audio Book
-              "PLekI352WvEBOfwVes4ydf5MVyYkmlcfzo",  # Global Guest Interview
-              "PLekI352WvEBOzieG5X5SzFhL72eix2EGX",  # Live Stream
-              "PLekI352WvEBPAgoMY2dl5_5Ml37M9nSLZ",  # Natural Korean Conversation
-              "PLekI352WvEBPhAcLdV-4pvZOB3AzAE7T4",  # Korean News
-          ]
 
           def fetch_playlist(pl_id):
               videos = []
@@ -49,30 +40,39 @@ jobs:
                       break
               return videos
 
-          all_videos = {}
-          for pl_id in PLAYLISTS:
-              for v in fetch_playlist(pl_id):
-                  if v["id"] not in all_videos and v["title"] not in ("Private video", "Deleted video"):
-                      all_videos[v["id"]] = v
+          with open("data/channels.json") as f:
+              channels = json.load(f)
 
-          videos_sorted = sorted(all_videos.values(), key=lambda v: v["published"], reverse=True)
+          for ch in channels:
+              ch_id = ch["id"]
+              all_videos = {}
+              for pl_id in ch["playlists"]:
+                  for v in fetch_playlist(pl_id):
+                      if v["id"] not in all_videos and v["title"] not in ("Private video", "Deleted video"):
+                          all_videos[v["id"]] = v
 
-          with open("data/videos.json", "r") as f:
-              existing = json.load(f)
+              videos_sorted = sorted(all_videos.values(), key=lambda v: v["published"], reverse=True)
 
-          old_count = len(existing["videos"])
-          existing["videos"] = videos_sorted
-          with open("data/videos.json", "w") as f:
-              json.dump(existing, f, ensure_ascii=False, indent=2)
+              out_path = f"public/data/videos/{ch_id}.json"
+              try:
+                  with open(out_path) as f:
+                      existing = json.load(f)
+                  old_count = len(existing.get("videos", []))
+              except FileNotFoundError:
+                  old_count = 0
 
-          print(f"Total: {len(videos_sorted)} (was {old_count})")
+              result = {"channelId": ch["channelId"], "channelName": ch["name"], "videos": videos_sorted}
+              with open(out_path, "w") as f:
+                  json.dump(result, f, ensure_ascii=False, indent=2)
+
+              print(f"{ch['name']}: {len(videos_sorted)} videos (was {old_count})")
           EOF
 
       - name: Commit if changed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/videos.json
+          git add public/data/
           if git diff --staged --quiet; then
             echo "Nothing to commit"
           else
