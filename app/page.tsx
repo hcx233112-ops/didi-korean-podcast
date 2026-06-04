@@ -65,7 +65,7 @@ export default function Home() {
   const [timeLeft, setTimeLeft] = useState<number | null>(null)
   const [seeking, setSeeking] = useState(false)
   const [showTranscript, setShowTranscript] = useState(false)
-  const [transcriptLang, setTranscriptLang] = useState<'zh' | 'ko'>('zh')
+  const [showTranslation, setShowTranslation] = useState(false)
   const [transcriptSegs, setTranscriptSegs] = useState<TranscriptSegment[]>([])
   const [transcriptLoading, setTranscriptLoading] = useState(false)
   const [transcriptError, setTranscriptError] = useState<string | null>(null)
@@ -464,23 +464,27 @@ export default function Home() {
             >
               关闭
             </button>
-            <span className="text-sm font-semibold text-white">字幕</span>
-            {/* Lang toggle */}
-            <div className="flex rounded-lg overflow-hidden border border-white/15 text-xs">
-              {(['zh', 'ko'] as const).map(lang => (
-                <button
-                  key={lang}
-                  onClick={() => setTranscriptLang(lang)}
-                  className="px-3 py-1.5 transition-colors"
-                  style={{
-                    background: transcriptLang === lang ? accentColor : 'transparent',
-                    color: transcriptLang === lang ? '#fff' : '#9ca3af',
-                  }}
-                >
-                  {lang === 'zh' ? '中文' : '한국어'}
-                </button>
-              ))}
+            <div className="text-center">
+              <span className="text-sm font-semibold text-white">字幕</span>
+              <p className="text-xs text-gray-500 mt-0.5">한국어</p>
             </div>
+            {/* Translation toggle */}
+            <button
+              onClick={() => setShowTranslation(v => !v)}
+              className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border transition-colors"
+              style={{
+                borderColor: showTranslation ? accentColor : 'rgba(255,255,255,0.15)',
+                background: showTranslation ? `${accentColor}22` : 'transparent',
+                color: showTranslation ? accentColor : '#9ca3af',
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M3 5h12M9 3v2M11 11c-1.5 2-3.5 3.5-6 4.5"/>
+                <path d="M8 11c1 2 3 4 5.5 5"/>
+                <path d="M14 12l2.5 7M16 16h4"/>
+              </svg>
+              中文翻译
+            </button>
           </div>
 
           {/* Now playing mini bar */}
@@ -526,17 +530,26 @@ export default function Home() {
                   style={isActive ? { background: '#1c1c1e' } : {}}
                 >
                   <p
-                    className="text-base leading-relaxed transition-all"
+                    className="leading-relaxed transition-all"
                     style={{
                       color: isActive ? '#fff' : '#6b7280',
                       fontWeight: isActive ? 600 : 400,
                       fontSize: isActive ? '17px' : '15px',
                     }}
                   >
-                    {transcriptLang === 'zh' ? seg.zh : seg.ko}
+                    {seg.ko}
                   </p>
-                  {isActive && transcriptLang === 'zh' && seg.ko && (
-                    <p className="text-xs text-gray-600 mt-1">{seg.ko}</p>
+                  {showTranslation && seg.zh && (
+                    <p
+                      className="leading-relaxed mt-1 transition-all"
+                      style={{
+                        color: isActive ? accentColor : '#4b5563',
+                        fontSize: isActive ? '14px' : '13px',
+                        fontWeight: isActive ? 500 : 400,
+                      }}
+                    >
+                      {seg.zh}
+                    </p>
                   )}
                 </button>
               )
