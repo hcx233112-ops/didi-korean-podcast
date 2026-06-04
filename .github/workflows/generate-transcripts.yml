@@ -1,0 +1,131 @@
+name: Generate Transcripts
+
+on:
+  workflow_dispatch:          # 手动触发
+  schedule:
+    - cron: '0 2 * * *'      # 每天凌晨 2 点自动跑（补齐新视频的字幕）
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300      # 最多跑 5 小时
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install youtube-transcript-api deep-translator
+
+      - name: Generate missing transcripts
+        run: |
+          python3 << 'EOF'
+          import json, time, os
+          from pathlib import Path
+          from youtube_transcript_api import YouTubeTranscriptApi
+          from youtube_transcript_api._errors import NoTranscriptFound, TranscriptsDisabled, VideoUnavailable
+          from deep_translator import GoogleTranslator
+
+          TRANSCRIPTS_DIR = Path("public/data/transcripts")
+          TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+
+          # 读所有视频
+          videos = []
+          for f in Path("public/data/videos").glob("*.json"):
+              data = json.loads(f.read_text())
+              videos.extend(data.get("videos", []))
+
+          seen = set()
+          unique_videos = []
+          for v in videos:
+              if v["id"] not in seen:
+                  seen.add(v["id"])
+                  unique_videos.append(v)
+
+          api = YouTubeTranscriptApi()
+          done = skipped = failed = 0
+
+          def translate_batch(texts, batch_size=80):
+              translator = GoogleTranslator(source='ko', target='zh-CN')
+              result = []
+              for i in range(0, len(texts), batch_size):
+                  batch = texts[i:i+batch_size]
+                  try:
+                      translated = translator.translate_batch(batch)
+                      result.extend(t or b for t, b in zip(translated, batch))
+                  except Exception as e:
+                      print(f"    翻译批次失败: {e}")
+                      result.extend(batch)
+                  time.sleep(1)
+              return result
+
+          for i, video in enumerate(unique_videos, 1):
+              vid = video["id"]
+              out = TRANSCRIPTS_DIR / f"{vid}.json"
+
+              if out.exists():
+                  skipped += 1
+                  continue
+
+              print(f"[{i}/{len(unique_videos)}] {vid} {video['title'][:40]}")
+
+              try:
+                  tlist = api.list(vid)
+                  ko_track = tlist.find_transcript(["ko"])
+                  segs = ko_track.fetch()
+
+                  ko_texts = [s.text.replace("\n", " ") for s in segs]
+                  zh_texts = translate_batch(ko_texts)
+
+                  result = {
+                      "videoId": vid,
+                      "segments": [
+                          {
+                              "start": round(s.start, 2),
+                              "end": round(s.start + s.duration, 2),
+                              "ko": k,
+                              "zh": z,
+                          }
+                          for s, k, z in zip(segs, ko_texts, zh_texts)
+                      ],
+                  }
+                  out.write_text(json.dumps(result, ensure_ascii=False))
+                  print(f"  ✅ {len(segs)} 段字幕")
+                  done += 1
+                  time.sleep(3)
+
+              except (NoTranscriptFound, TranscriptsDisabled, VideoUnavailable) as e:
+                  out.write_text(json.dumps({"videoId": vid, "segments": [], "error": "no_transcript"}))
+                  print(f"  ⚠️  无字幕")
+                  failed += 1
+                  time.sleep(1)
+
+              except Exception as e:
+                  err = str(e)
+                  print(f"  ❌ {type(e).__name__}: {err[:80]}")
+                  if "IpBlocked" in err or "429" in err:
+                      print("  IP 被封，等待 60 秒后继续...")
+                      time.sleep(60)
+                  else:
+                      time.sleep(3)
+                  failed += 1
+
+          print(f"\n完成: {done}  跳过(已有): {skipped}  失败: {failed}")
+          EOF
+
+      - name: Commit new transcripts
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add public/data/transcripts/
+          if git diff --staged --quiet; then
+            echo "没有新字幕"
+          else
+            COUNT=$(git diff --staged --name-only | wc -l)
+            git commit -m "chore: add ${COUNT} transcript files"
+            git push
+          fi
