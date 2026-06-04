@@ -18,6 +18,13 @@ interface Video {
   thumbnail: string
 }
 
+interface TranscriptSegment {
+  start: number
+  end: number
+  ko: string
+  zh: string
+}
+
 interface ChannelVideos {
   channelName: string
   videos: Video[]
@@ -57,11 +64,19 @@ export default function Home() {
   const [timerMinutes, setTimerMinutes] = useState(0)
   const [timeLeft, setTimeLeft] = useState<number | null>(null)
   const [seeking, setSeeking] = useState(false)
+  const [showTranscript, setShowTranscript] = useState(false)
+  const [transcriptLang, setTranscriptLang] = useState<'zh' | 'ko'>('zh')
+  const [transcriptSegs, setTranscriptSegs] = useState<TranscriptSegment[]>([])
+  const [transcriptLoading, setTranscriptLoading] = useState(false)
+  const [transcriptError, setTranscriptError] = useState<string | null>(null)
+  const [transcriptVideoId, setTranscriptVideoId] = useState<string | null>(null)
 
   const playerRef = useRef<YT.Player | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const seekingRef = useRef(false)
+  const transcriptListRef = useRef<HTMLDivElement>(null)
+  const userScrollingRef = useRef(false)
 
   const activeChannel = channels.find(c => c.id === activeChannelId) ?? channels[0]
   const videos = channelVideos[activeChannelId] ?? []
@@ -176,6 +191,39 @@ export default function Home() {
       }
     }, 1000)
   }
+
+  async function openTranscript(video: Video) {
+    setShowTranscript(true)
+    if (transcriptVideoId === video.id && transcriptSegs.length > 0) return
+    setTranscriptLoading(true)
+    setTranscriptError(null)
+    setTranscriptSegs([])
+    setTranscriptVideoId(video.id)
+    try {
+      const res = await fetch(`/data/transcripts/${video.id}.json`)
+      if (!res.ok) throw new Error('not_found')
+      const data = await res.json()
+      if (!data.segments?.length) {
+        setTranscriptError('暂无字幕')
+      } else {
+        setTranscriptSegs(data.segments)
+      }
+    } catch {
+      setTranscriptError('暂无字幕')
+    } finally {
+      setTranscriptLoading(false)
+    }
+  }
+
+  const currentSegIdx = transcriptSegs.findIndex(
+    (s, i) => elapsed >= s.start && (i === transcriptSegs.length - 1 || elapsed < transcriptSegs[i + 1].start)
+  )
+
+  useEffect(() => {
+    if (!showTranscript || currentSegIdx < 0 || userScrollingRef.current) return
+    const el = document.getElementById(`seg-${currentSegIdx}`)
+    el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }, [currentSegIdx, showTranscript])
 
   function switchChannel(id: string) {
     setActiveChannelId(id)
@@ -389,9 +437,123 @@ export default function Home() {
                   <path d="M9 3h6M12 3v2"/>
                 </svg>
               </button>
+              <button onClick={() => current && openTranscript(current)} className="active:opacity-60">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
+                  stroke={showTranscript ? accentColor : '#6b7280'} strokeWidth="2">
+                  <rect x="3" y="5" width="18" height="14" rx="2"/>
+                  <line x1="7" y1="9" x2="17" y2="9"/>
+                  <line x1="7" y1="13" x2="17" y2="13"/>
+                  <line x1="7" y1="17" x2="13" y2="17"/>
+                </svg>
+              </button>
             </div>
           </div>
           <div style={{ height: 'env(safe-area-inset-bottom)' }} />
+        </div>
+      )}
+
+      {/* Transcript Sheet */}
+      {showTranscript && current && (
+        <div className="fixed inset-0 z-50 flex flex-col" style={{ background: '#000' }}>
+          {/* Header */}
+          <div className="flex items-center justify-between px-5 pt-14 pb-4 border-b border-white/10 flex-shrink-0">
+            <button
+              onClick={() => setShowTranscript(false)}
+              className="text-sm font-medium active:opacity-60"
+              style={{ color: accentColor }}
+            >
+              关闭
+            </button>
+            <span className="text-sm font-semibold text-white">字幕</span>
+            {/* Lang toggle */}
+            <div className="flex rounded-lg overflow-hidden border border-white/15 text-xs">
+              {(['zh', 'ko'] as const).map(lang => (
+                <button
+                  key={lang}
+                  onClick={() => setTranscriptLang(lang)}
+                  className="px-3 py-1.5 transition-colors"
+                  style={{
+                    background: transcriptLang === lang ? accentColor : 'transparent',
+                    color: transcriptLang === lang ? '#fff' : '#9ca3af',
+                  }}
+                >
+                  {lang === 'zh' ? '中文' : '한국어'}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Now playing mini bar */}
+          <div className="px-5 py-3 flex items-center gap-3 border-b border-white/10 flex-shrink-0"
+            style={{ background: '#111' }}>
+            <img src={current.thumbnail} alt="" className="w-9 h-9 rounded-lg object-cover flex-shrink-0" />
+            <p className="text-xs text-gray-400 truncate flex-1">{current.title}</p>
+            <button onClick={togglePlay} className="flex-shrink-0">
+              <div className="w-7 h-7 rounded-full flex items-center justify-center" style={{ background: accentColor }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="white">
+                  {playing
+                    ? <><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></>
+                    : <path d="M8 5v14l11-7z"/>}
+                </svg>
+              </div>
+            </button>
+          </div>
+
+          {/* Transcript content */}
+          <div
+            ref={transcriptListRef}
+            className="flex-1 overflow-y-auto px-5 py-6"
+            onTouchStart={() => { userScrollingRef.current = true }}
+            onTouchEnd={() => { setTimeout(() => { userScrollingRef.current = false }, 3000) }}
+          >
+            {transcriptLoading && (
+              <p className="text-center text-gray-500 py-20">加载字幕中...</p>
+            )}
+            {transcriptError && (
+              <p className="text-center text-gray-500 py-20">{transcriptError}</p>
+            )}
+            {transcriptSegs.map((seg, i) => {
+              const isActive = i === currentSegIdx
+              return (
+                <button
+                  id={`seg-${i}`}
+                  key={i}
+                  onClick={() => {
+                    playerRef.current?.seekTo(seg.start, true)
+                    if (!playing) playerRef.current?.playVideo()
+                  }}
+                  className="w-full text-left mb-1 px-3 py-2 rounded-xl transition-colors active:bg-white/5"
+                  style={isActive ? { background: '#1c1c1e' } : {}}
+                >
+                  <p
+                    className="text-base leading-relaxed transition-all"
+                    style={{
+                      color: isActive ? '#fff' : '#6b7280',
+                      fontWeight: isActive ? 600 : 400,
+                      fontSize: isActive ? '17px' : '15px',
+                    }}
+                  >
+                    {transcriptLang === 'zh' ? seg.zh : seg.ko}
+                  </p>
+                  {isActive && transcriptLang === 'zh' && seg.ko && (
+                    <p className="text-xs text-gray-600 mt-1">{seg.ko}</p>
+                  )}
+                </button>
+              )
+            })}
+            <div className="h-20" />
+          </div>
+
+          {/* Progress bar at bottom */}
+          <div className="flex-shrink-0 px-5 pb-8 pt-3 border-t border-white/10" style={{ background: '#000' }}>
+            <div className="flex items-center gap-3 text-xs text-gray-500 mb-2">
+              <span>{formatTime(elapsed)}</span>
+              <div className="flex-1 relative h-1 bg-white/15 rounded-full">
+                <div className="absolute top-0 left-0 h-full rounded-full" style={{ width: filled, background: accentColor }} />
+              </div>
+              <span>{formatTime(duration)}</span>
+            </div>
+          </div>
         </div>
       )}
     </div>
