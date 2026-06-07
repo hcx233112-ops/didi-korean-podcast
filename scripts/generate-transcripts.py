@@ -5,12 +5,12 @@
 push 后自动删除本地 JSON，用 .done 记录已处理的视频 ID
 """
 
-import json, os, time, sys, subprocess, concurrent.futures
+import json, os, time, sys, subprocess, concurrent.futures, tempfile
 sys.stdout.reconfigure(encoding="utf-8")
 sys.stderr.reconfigure(encoding="utf-8")
 from pathlib import Path
-from youtube_transcript_api import YouTubeTranscriptApi
 from deep_translator import GoogleTranslator
+import yt_dlp
 
 ROOT = Path(__file__).parent.parent
 TRANSCRIPTS_DIR = ROOT / "public" / "data" / "transcripts"
@@ -19,7 +19,7 @@ CHANNELS_DIR = ROOT / "public" / "data" / "videos"
 DONE_FILE = TRANSCRIPTS_DIR / ".done"
 
 AUTO_PUSH_EVERY = 20
-_translation_disabled = False  # 连续失败后自动禁用翻译
+_translation_disabled = False
 
 
 def load_done() -> set:
@@ -90,32 +90,73 @@ def translate_batch(texts, src="ko", tgt="zh-CN", batch_size=80):
     return result
 
 
+def fetch_subtitles_ytdlp(video_id):
+    """用 yt-dlp 拉韩语字幕，返回 segments 列表，无字幕返回 None。"""
+    tmpdir = Path(tempfile.mkdtemp())
+    ydl_opts = {
+        "writesubtitles": True,
+        "writeautomaticsub": True,
+        "subtitleslangs": ["ko"],
+        "subtitlesformat": "json3",
+        "skip_download": True,
+        "outtmpl": str(tmpdir / "%(id)s.%(ext)s"),
+        "quiet": True,
+        "no_warnings": True,
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            run_with_timeout(lambda: ydl.download([f"https://www.youtube.com/watch?v={video_id}"]), 30)
+    except Exception as e:
+        raise Exception(f"yt-dlp 下载失败: {e}")
+
+    files = list(tmpdir.glob("*.json3"))
+    if not files:
+        return None  # 无字幕
+
+    data = json.loads(files[0].read_text(encoding="utf-8"))
+    # 清理临时文件
+    for f in tmpdir.iterdir():
+        f.unlink()
+    tmpdir.rmdir()
+
+    segments = []
+    for event in data.get("events", []):
+        if "segs" not in event:
+            continue
+        start_ms = event.get("tStartMs", 0)
+        dur_ms = event.get("dDurationMs", 0)
+        text = "".join(s.get("utf8", "") for s in event["segs"]).strip()
+        text = text.replace("\n", " ").strip()
+        if not text:
+            continue
+        segments.append({
+            "start_ms": start_ms,
+            "end_ms": start_ms + dur_ms,
+            "text": text,
+        })
+    return segments
+
+
 def generate(video_id, title):
     out = TRANSCRIPTS_DIR / f"{video_id}.json"
     if out.exists():
         return "skip"
 
-    api = YouTubeTranscriptApi()
-    try:
-        transcript_list = run_with_timeout(lambda: api.list(video_id), 20)
-        ko = transcript_list.find_transcript(["ko"])
-        segments = run_with_timeout(ko.fetch, 20)
-    except Exception as e:
-        err_msg = str(e)
-        if "No transcripts" in err_msg or "Could not find" in err_msg:
-            out.write_text(json.dumps({"videoId": video_id, "segments": [], "error": "no_transcript"}, ensure_ascii=False), encoding="utf-8")
-            return "no_transcript"
-        raise
+    segments = fetch_subtitles_ytdlp(video_id)
 
-    ko_texts = [s.text.replace("\n", " ") for s in segments]
+    if segments is None:
+        out.write_text(json.dumps({"videoId": video_id, "segments": [], "error": "no_transcript"}, ensure_ascii=False), encoding="utf-8")
+        return "no_transcript"
+
+    ko_texts = [s["text"] for s in segments]
     zh_texts = translate_batch(ko_texts)
 
     result = {
         "videoId": video_id,
         "segments": [
             {
-                "start": round(s.start, 2),
-                "end": round(s.start + s.duration, 2),
+                "start": round(s["start_ms"] / 1000, 2),
+                "end": round(s["end_ms"] / 1000, 2),
                 "ko": ko,
                 "zh": zh,
             }
@@ -135,7 +176,6 @@ def git_push_and_clean(done_ids: set):
         print("  没有新文件，跳过 push")
         return
     subprocess.run(["git", "commit", "-m", "chore: add transcripts (auto)"], cwd=str(ROOT))
-    # pull rebase 后再 push，避免远端有新提交时被拒绝
     subprocess.run(["git", "pull", "--rebase", "origin", "main"], cwd=str(ROOT))
     push_result = subprocess.run(["git", "push"], cwd=str(ROOT))
     if push_result.returncode != 0:
@@ -183,7 +223,7 @@ def main():
                 new_since_push += 1
                 done_ids.add(vid)
                 print("  → ✅ 完成")
-            time.sleep(1.5)
+            time.sleep(1)
         except Exception as e:
             failed += 1
             print(f"  → ❌ 失败: {e}")
