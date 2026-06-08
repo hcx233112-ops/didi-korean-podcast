@@ -170,7 +170,13 @@ def generate(video_id, title):
 def git_push_and_clean(done_ids: set):
     print("\n📤 自动推送到 GitHub...")
     save_done(done_ids)
-    subprocess.run(["git", "add", "public/data/transcripts/"], cwd=str(ROOT))
+    # 只 add 新文件，不 add 删除（避免覆盖之前批次）
+    new_files = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard", "public/data/transcripts/"],
+        cwd=str(ROOT), capture_output=True, text=True
+    ).stdout.strip().splitlines()
+    if new_files:
+        subprocess.run(["git", "add", "--"] + new_files, cwd=str(ROOT))
     result = subprocess.run(["git", "diff", "--staged", "--quiet"], cwd=str(ROOT))
     if result.returncode == 0:
         print("  没有新文件，跳过 push")
@@ -179,11 +185,9 @@ def git_push_and_clean(done_ids: set):
     subprocess.run(["git", "pull", "--rebase", "origin", "main"], cwd=str(ROOT))
     push_result = subprocess.run(["git", "push"], cwd=str(ROOT))
     if push_result.returncode != 0:
-        print("  ⚠️ Push 失败，跳过本地清理")
+        print("  ⚠️ Push 失败")
         return
-    for f in TRANSCRIPTS_DIR.glob("*.json"):
-        f.unlink()
-    print(f"  ✅ Push 完成，本地 JSON 已清理\n")
+    print(f"  ✅ Push 完成\n")
 
 
 def main():
