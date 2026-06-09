@@ -1,0 +1,5 @@
+:8080 {
+	root * E:/claude/播客/audio
+	file_server browse
+	header Access-Control-Allow-Origin *
+}
