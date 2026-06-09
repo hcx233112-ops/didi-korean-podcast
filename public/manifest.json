@@ -1,0 +1,17 @@
+{
+  "name": "Didi Korean Podcast",
+  "short_name": "Didi播客",
+  "description": "韩语播客，锁屏不断播",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#bf5af2",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "any",
+      "type": "image/x-icon"
+    }
+  ]
+}

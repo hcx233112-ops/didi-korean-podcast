@@ -56,6 +56,7 @@ function ScrollPicker({ values, selected, onChange, label }: {
     </div>
   )
 }
+
 const SPEED_OPTIONS = [0.75, 1, 1.25, 1.5, 2]
 const RAW_AUDIO_BASE = process.env.NEXT_PUBLIC_AUDIO_BASE || '/audio/'
 const AUDIO_BASE = RAW_AUDIO_BASE.endsWith('/') ? RAW_AUDIO_BASE : RAW_AUDIO_BASE + '/'
@@ -69,7 +70,7 @@ function formatDate(s: string) {
   return new Date(s).toLocaleDateString('zh-CN', { year: 'numeric', month: 'short', day: 'numeric' })
 }
 
-type SheetName = 'channel' | 'timer' | 'transcript'
+type SheetName = 'channel' | 'timer' | 'transcript' | 'note'
 type FilterType = 'all' | 'fav' | 'inprogress' | 'done'
 
 const FILTERS: { key: FilterType; label: string }[] = [
@@ -107,6 +108,16 @@ export default function Home() {
   const [channelAvatars, setChannelAvatars] = useState<Record<string, string>>({})
   const [pickerHours, setPickerHours] = useState(0)
   const [pickerMins, setPickerMins] = useState(0)
+  // Feature: notes
+  const [notes, setNotes] = useState<Record<string, string>>({})
+  const [noteVideoId, setNoteVideoId] = useState<string | null>(null)
+  const [noteText, setNoteText] = useState('')
+  const [showNote, setShowNote] = useState(false)
+  // Feature: search
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchActive, setSearchActive] = useState(false)
+  // Pull-to-close
+  const [pullY, setPullY] = useState(0)
 
   const playerRef = useRef<HTMLAudioElement | null>(null)
   const audioElRef = useRef<HTMLAudioElement | null>(null)
@@ -115,6 +126,7 @@ export default function Home() {
   const syncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const seekingRef = useRef(false)
   const transcriptListRef = useRef<HTMLDivElement>(null)
+  const transcriptHeaderRef = useRef<HTMLDivElement>(null)
   const userScrollingRef = useRef(false)
   const savedPosRef = useRef(0)
   const currentIdRef = useRef<string | null>(null)
@@ -123,11 +135,7 @@ export default function Home() {
   const stopAfterCurrentRef = useRef(false)
   const videosRef = useRef<Video[]>([])
   const playFnRef = useRef<(v: Video) => void>(() => {})
-  const transcriptPageRef = useRef<HTMLDivElement>(null)
-  const pullStartYRef = useRef(0)
   const pullYRef = useRef(0)
-  const pullActiveRef = useRef(false)
-  const [pullY, setPullY] = useState(0)
 
   const activeChannel = channels.find(c => c.id === activeChannelId) ?? channels[0]
   const videos = channelVideos[activeChannelId] ?? []
@@ -145,8 +153,8 @@ export default function Home() {
           cachedUrl = obj.url ?? null
           needsFetch = !obj.ts || Date.now() - obj.ts >= AVATAR_TTL
         } catch {
-          cachedUrl = raw   // old plain-string format
-          needsFetch = true // re-fetch to update to new format
+          cachedUrl = raw
+          needsFetch = true
         }
       }
       if (cachedUrl) setChannelAvatars(prev => ({ ...prev, [ch.id]: cachedUrl! }))
@@ -162,7 +170,7 @@ export default function Home() {
     })
   }, [])
 
-  // Keep refs current for async/stale-closure usage
+  // Keep refs current
   useEffect(() => { favoritesRef.current = favorites }, [favorites])
   useEffect(() => { stopAfterCurrentRef.current = stopAfterCurrent }, [stopAfterCurrent])
   useEffect(() => { videosRef.current = channelVideos[activeChannelId] ?? [] }, [channelVideos, activeChannelId])
@@ -188,9 +196,12 @@ export default function Home() {
       if (fav) { const s = new Set<string>(JSON.parse(fav)); setFavorites(s); favoritesRef.current = s }
       const trans = localStorage.getItem('podcast-translation')
       if (trans !== null) setShowTranslation(trans === '1')
+      const speed = parseFloat(localStorage.getItem('podcast-speed') || '1')
+      if (SPEED_OPTIONS.includes(speed)) setPlaybackRate(speed)
     } catch {}
     const prog: Record<string, number> = {}
     const details: Record<string, { pos: number; dur: number }> = {}
+    const loadedNotes: Record<string, string> = {}
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i)
       if (key?.startsWith('podcast-pos-')) {
@@ -203,9 +214,16 @@ export default function Home() {
           }
         } catch {}
       }
+      if (key?.startsWith('podcast-note-')) {
+        try {
+          const note = localStorage.getItem(key)
+          if (note) loadedNotes[key.replace('podcast-note-', '')] = note
+        } catch {}
+      }
     }
     setVideoProgress(prog)
     setVideoDetails(details)
+    setNotes(loadedNotes)
   }, [])
 
   // ── Cloud sync: load on mount ──
@@ -216,8 +234,6 @@ export default function Home() {
         if (!r.ok) return
         const remote: SyncData | null = await r.json()
         if (!remote) return
-
-        // Merge favorites (union)
         if (remote.favorites?.length) {
           const local: string[] = JSON.parse(localStorage.getItem('podcast-favorites') || '[]')
           const merged = [...new Set([...local, ...remote.favorites])]
@@ -226,8 +242,6 @@ export default function Home() {
           setFavorites(s)
           favoritesRef.current = s
         }
-
-        // Merge progress (take whichever is further)
         if (remote.progress) {
           const progUpdates: Record<string, number> = {}
           const detailUpdates: Record<string, { pos: number; dur: number }> = {}
@@ -268,13 +282,11 @@ export default function Home() {
     } catch {}
   }
 
-  // 收藏变化时立即同步（防抖 500ms）
   function scheduleSync() {
     if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current)
     syncTimeoutRef.current = setTimeout(pushSync, 500)
   }
 
-  // 每 5 秒同步一次进度（播放期间）
   useEffect(() => {
     const id = setInterval(() => {
       if (playerRef.current && !playerRef.current.paused) pushSync()
@@ -282,10 +294,13 @@ export default function Home() {
     return () => clearInterval(id)
   }, [])
 
-  // Persist translation toggle
   useEffect(() => {
     try { localStorage.setItem('podcast-translation', showTranslation ? '1' : '0') } catch {}
   }, [showTranslation])
+
+  useEffect(() => {
+    try { localStorage.setItem('podcast-speed', String(playbackRate)) } catch {}
+  }, [playbackRate])
 
   const saveProgress = useCallback((id: string, cur: number, dur: number) => {
     if (cur < 5 || dur <= 0) return
@@ -306,44 +321,49 @@ export default function Home() {
     return () => document.removeEventListener('visibilitychange', onHide)
   }, [saveProgress])
 
-  // ── Pull-to-close transcript ──
+  // ── Pull-to-close transcript: touchstart from header, move/end on document ──
   useEffect(() => {
     if (!showTranscript) { setPullY(0); return }
-    const el = transcriptPageRef.current
-    if (!el) return
-    const onStart = (e: TouchEvent) => {
-      pullStartYRef.current = e.touches[0].clientY
-      pullActiveRef.current = false
+    let startY = 0
+    let active = false
+
+    const onHeaderStart = (e: TouchEvent) => {
+      startY = e.touches[0].clientY
+      active = true
     }
-    const onMove = (e: TouchEvent) => {
-      const listEl = transcriptListRef.current
-      if (listEl && listEl.scrollTop > 0) { pullActiveRef.current = false; return }
-      const delta = e.touches[0].clientY - pullStartYRef.current
-      if (delta > 8) {
-        pullActiveRef.current = true
-        const y = Math.min(delta * 0.4, 200)
+    const onDocMove = (e: TouchEvent) => {
+      if (!active) return
+      const delta = e.touches[0].clientY - startY
+      if (delta > 0) {
+        e.preventDefault()
+        const y = Math.min(delta * 0.45, 200)
         pullYRef.current = y
         setPullY(y)
-        e.preventDefault()
+      } else {
+        pullYRef.current = 0
+        setPullY(0)
       }
     }
-    const onEnd = () => {
-      if (pullActiveRef.current && pullYRef.current > 80) {
+    const onDocEnd = () => {
+      if (!active) return
+      active = false
+      if (pullYRef.current > 80) {
         setPullY(0)
         closeSheet('transcript', setShowTranscript)
       } else {
         setPullY(0)
       }
       pullYRef.current = 0
-      pullActiveRef.current = false
     }
-    el.addEventListener('touchstart', onStart, { passive: true })
-    el.addEventListener('touchmove', onMove, { passive: false })
-    el.addEventListener('touchend', onEnd, { passive: true })
+
+    const headerEl = transcriptHeaderRef.current
+    headerEl?.addEventListener('touchstart', onHeaderStart, { passive: true })
+    document.addEventListener('touchmove', onDocMove, { passive: false })
+    document.addEventListener('touchend', onDocEnd, { passive: true })
     return () => {
-      el.removeEventListener('touchstart', onStart)
-      el.removeEventListener('touchmove', onMove)
-      el.removeEventListener('touchend', onEnd)
+      headerEl?.removeEventListener('touchstart', onHeaderStart)
+      document.removeEventListener('touchmove', onDocMove)
+      document.removeEventListener('touchend', onDocEnd)
     }
   }, [showTranscript])
 
@@ -516,6 +536,17 @@ export default function Home() {
     })
   }
 
+  function saveNote(id: string, text: string) {
+    const t = text.trim()
+    if (t) {
+      setNotes(prev => ({ ...prev, [id]: t }))
+      localStorage.setItem(`podcast-note-${id}`, t)
+    } else {
+      setNotes(prev => { const n = { ...prev }; delete n[id]; return n })
+      localStorage.removeItem(`podcast-note-${id}`)
+    }
+  }
+
   async function openTranscript(video: Video) {
     setShowTranscript(true)
     if (transcriptVideoId === video.id && transcriptSegs.length > 0) return
@@ -553,13 +584,14 @@ export default function Home() {
   })
 
   const filteredVideos = useMemo(() => videos.filter(v => {
+    if (searchQuery) return v.title.toLowerCase().includes(searchQuery.toLowerCase())
     const p = videoProgress[v.id] ?? 0
     if (filter === 'all') return true
     if (filter === 'fav') return favorites.has(v.id)
     if (filter === 'inprogress') return p > 0 && p < DONE_THRESHOLD
     if (filter === 'done') return p >= DONE_THRESHOLD
     return true
-  }), [videos, videoProgress, filter, favorites])
+  }), [videos, videoProgress, filter, favorites, searchQuery])
 
   playFnRef.current = play
 
@@ -571,7 +603,7 @@ export default function Home() {
       {/* ── Main list ── */}
       <div className="flex-1 overflow-y-auto">
 
-        {/* Channel header — compact horizontal */}
+        {/* Channel header */}
         <div className="px-4 pb-3" style={{ paddingTop: 'calc(env(safe-area-inset-top) + 10px)' }}>
           <div className="flex items-center gap-3">
             <button
@@ -604,20 +636,45 @@ export default function Home() {
             )}
           </div>
 
-          {/* Filter tabs */}
-          <div className="flex gap-1.5 mt-3 overflow-x-auto pb-0.5" style={{ scrollbarWidth: 'none' }}>
-            {FILTERS.map(f => (
-              <button key={f.key} onClick={() => setFilter(f.key)}
-                className="text-[12px] px-3 py-1.5 rounded-full whitespace-nowrap transition-colors flex-shrink-0"
-                style={{
-                  background: filter === f.key ? ac : 'var(--bg-raised)',
-                  color: filter === f.key ? 'white' : 'var(--text-secondary)',
-                  fontWeight: filter === f.key ? 600 : 400,
-                }}>
-                {f.key === 'fav' ? '♥ 收藏' : f.label}
+          {/* Filter tabs / Search */}
+          {searchActive ? (
+            <div className="flex items-center gap-2 mt-3">
+              <input
+                autoFocus
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                placeholder="搜索节目…"
+                className="flex-1 px-3 py-1.5 rounded-full text-[13px] outline-none"
+                style={{ background: 'var(--bg-raised)', color: 'var(--text-primary)' }}
+              />
+              <button onClick={() => { setSearchActive(false); setSearchQuery('') }}
+                className="text-[13px] font-medium active:opacity-50 flex-shrink-0"
+                style={{ color: 'var(--text-secondary)' }}>
+                取消
               </button>
-            ))}
-          </div>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1.5 mt-3 overflow-x-auto pb-0.5" style={{ scrollbarWidth: 'none' }}>
+              {FILTERS.map(f => (
+                <button key={f.key} onClick={() => setFilter(f.key)}
+                  className="text-[12px] px-3 py-1.5 rounded-full whitespace-nowrap transition-colors flex-shrink-0"
+                  style={{
+                    background: filter === f.key ? ac : 'var(--bg-raised)',
+                    color: filter === f.key ? 'white' : 'var(--text-secondary)',
+                    fontWeight: filter === f.key ? 600 : 400,
+                  }}>
+                  {f.key === 'fav' ? '♥ 收藏' : f.label}
+                </button>
+              ))}
+              <button onClick={() => setSearchActive(true)}
+                className="ml-auto flex-shrink-0 p-1.5 rounded-full active:opacity-50"
+                style={{ background: 'var(--bg-raised)' }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-tertiary)" strokeWidth="2.5">
+                  <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
+                </svg>
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="h-px" style={{ background: 'var(--separator)' }} />
@@ -626,6 +683,7 @@ export default function Home() {
           <div className="px-5 py-12 text-center">
             <p className="text-sm" style={{ color: 'var(--text-tertiary)' }}>
               {videos.length === 0 ? '加载中…' :
+               searchQuery ? `没有找到「${searchQuery}」` :
                filter === 'fav' ? '还没有收藏的节目' :
                filter === 'inprogress' ? '没有进行中的节目' :
                filter === 'done' ? '还没有听完的节目' : '暂无节目'}
@@ -644,6 +702,7 @@ export default function Home() {
             const totalDur = video.duration ?? det?.dur
             const displayProg = isActive ? progress : prog
             const pct = prog > 0 ? Math.round(prog * 100) : 0
+            const note = notes[video.id]
             return (
               <div key={video.id} className="relative">
                 {isActive && (
@@ -660,7 +719,6 @@ export default function Home() {
                     <img src={video.thumbnail} alt="" loading="lazy"
                       className="w-[54px] h-[54px] rounded-xl object-cover"
                       style={{ background: 'var(--bg-raised)' }} />
-                    {/* Completed badge */}
                     {!isActive && isDone && (
                       <div className="absolute -top-1 -right-1 w-[18px] h-[18px] rounded-full flex items-center justify-center shadow-sm"
                         style={{ background: ac }}>
@@ -693,7 +751,7 @@ export default function Home() {
                   </div>
 
                   {/* Info */}
-                  <div className="flex-1 min-w-0 pr-8">
+                  <div className="flex-1 min-w-0 pr-9">
                     <p className="text-[14px] leading-snug line-clamp-2"
                       style={{
                         color: isActive ? ac : 'var(--text-primary)',
@@ -737,14 +795,19 @@ export default function Home() {
                           style={{ width: `${Math.round(displayProg * 100)}%`, background: ac, opacity: isActive ? 1 : 0.6 }} />
                       </div>
                     )}
+                    {note && (
+                      <p className="text-[11px] mt-1 line-clamp-1" style={{ color: 'var(--text-tertiary)', fontStyle: 'italic' }}>
+                        {note}
+                      </p>
+                    )}
                   </div>
                 </div>
 
                 {/* Favorite button */}
                 <button
                   onClick={(e) => toggleFavorite(video.id, e)}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 p-2 active:scale-90 transition-transform">
-                  <svg width="16" height="16" viewBox="0 0 24 24"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 p-2.5 active:scale-90 transition-transform">
+                  <svg width="17" height="17" viewBox="0 0 24 24"
                     fill={isFav ? ac : 'none'}
                     stroke={isFav ? ac : 'var(--text-tertiary)'}
                     strokeWidth="2">
@@ -764,8 +827,8 @@ export default function Home() {
         <div className="fixed inset-0 z-50 flex items-end"
           onClick={() => closeSheet('channel', setShowChannelPicker)}
           style={overlayAnim('channel')}>
-          <div className="w-full rounded-t-[28px] px-5 pt-3 pb-10"
-            style={sheetAnim('channel')}
+          <div className="w-full rounded-t-[28px] px-5 pt-3"
+            style={{ ...sheetAnim('channel'), paddingBottom: 'calc(2.5rem + env(safe-area-inset-bottom))' }}
             onClick={e => e.stopPropagation()}>
             <div className="w-9 h-1 rounded-full mx-auto mb-5" style={{ background: 'var(--separator)' }} />
             <p className="text-[17px] font-semibold mb-4" style={{ color: 'var(--text-primary)' }}>选择博主</p>
@@ -798,23 +861,20 @@ export default function Home() {
 
       {/* ── Timer sheet ── */}
       {showTimer && (
-        <div className="fixed inset-0 z-40 flex items-end"
-          onClick={() => closeSheet('timer', setShowTimer)}
-          style={overlayAnim('timer')}>
-          <div className="w-full rounded-t-[28px] px-5 pt-3 pb-10"
-            style={sheetAnim('timer')}
+        <div className="fixed inset-0 flex items-end" style={{ zIndex: 70, ...overlayAnim('timer') }}
+          onClick={() => closeSheet('timer', setShowTimer)}>
+          <div className="w-full rounded-t-[28px] px-5 pt-3"
+            style={{ ...sheetAnim('timer'), paddingBottom: 'calc(2.5rem + env(safe-area-inset-bottom))' }}
             onClick={e => e.stopPropagation()}>
             <div className="w-9 h-1 rounded-full mx-auto mb-5" style={{ background: 'var(--separator)' }} />
             <p className="text-[17px] font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>定时停止播放</p>
 
-            {/* Scroll picker */}
             <div className="flex items-center gap-1 mt-2">
               <ScrollPicker values={HOUR_VALUES} selected={pickerHours} onChange={setPickerHours} label="小时" />
               <span className="text-[28px] font-light pb-6" style={{ color: 'var(--text-secondary)' }}>:</span>
               <ScrollPicker values={MIN_VALUES} selected={pickerMins} onChange={setPickerMins} label="分钟" />
             </div>
 
-            {/* 放完这个停止 */}
             <button onClick={() => setStopAfterCurrent(p => !p)}
               className="w-full flex items-center justify-between py-3.5 border-t mt-1 active:opacity-60"
               style={{ borderColor: 'var(--separator)' }}>
@@ -825,7 +885,6 @@ export default function Home() {
               }
             </button>
 
-            {/* 确认按钮 */}
             <button onClick={() => startTimer(pickerHours * 60 + pickerMins)}
               className="w-full py-3.5 rounded-2xl text-[16px] font-semibold mt-3 active:opacity-80"
               style={{ background: ac, color: '#fff' }}>
@@ -842,6 +901,48 @@ export default function Home() {
         </div>
       )}
 
+      {/* ── Note sheet ── */}
+      {showNote && (
+        <div className="fixed inset-0 flex items-end" style={{ zIndex: 80, ...overlayAnim('note') }}
+          onClick={() => closeSheet('note', setShowNote)}>
+          <div className="w-full rounded-t-[28px] px-5 pt-3"
+            style={{ ...sheetAnim('note'), paddingBottom: 'calc(1.5rem + env(safe-area-inset-bottom))' }}
+            onClick={e => e.stopPropagation()}>
+            <div className="w-9 h-1 rounded-full mx-auto mb-5" style={{ background: 'var(--separator)' }} />
+            <p className="text-[17px] font-semibold mb-3" style={{ color: 'var(--text-primary)' }}>备注</p>
+            <textarea
+              value={noteText}
+              onChange={e => setNoteText(e.target.value)}
+              placeholder="添加备注…"
+              rows={4}
+              className="w-full px-3 py-2.5 rounded-xl text-[14px] resize-none outline-none"
+              style={{ background: 'var(--bg-raised)', color: 'var(--text-primary)' }}
+            />
+            <div className="flex gap-3 mt-3">
+              {notes[noteVideoId ?? ''] && (
+                <button onClick={() => {
+                  if (!noteVideoId) return
+                  saveNote(noteVideoId, '')
+                  closeSheet('note', setShowNote)
+                }}
+                  className="flex-1 py-3 rounded-2xl text-[15px] font-semibold active:opacity-80"
+                  style={{ background: 'var(--bg-raised)', color: 'var(--text-secondary)' }}>
+                  删除
+                </button>
+              )}
+              <button onClick={() => {
+                if (noteVideoId) saveNote(noteVideoId, noteText)
+                closeSheet('note', setShowNote)
+              }}
+                className="flex-1 py-3 rounded-2xl text-[15px] font-semibold active:opacity-80"
+                style={{ background: ac, color: '#fff' }}>
+                保存
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Mini Player ── */}
       {current && (
         <div className="fixed bottom-0 left-0 right-0 z-30"
@@ -854,8 +955,8 @@ export default function Home() {
           <div className="relative h-[2px]" style={{ background: 'var(--separator)' }}>
             <div className="absolute inset-y-0 left-0" style={{ width: filled, background: ac }} />
             <input type="range" min="0" max="1" step="0.001" value={progress}
-              onMouseDown={() => { seekingRef.current = true; seekingRef.current = true }}
-              onTouchStart={() => { seekingRef.current = true; seekingRef.current = true }}
+              onMouseDown={() => { seekingRef.current = true }}
+              onTouchStart={() => { seekingRef.current = true }}
               onChange={onSeekChange} onMouseUp={onSeekEnd} onTouchEnd={onSeekEnd}
               className="absolute w-full opacity-0 cursor-pointer"
               style={{ height: 16, top: -7 }} />
@@ -920,45 +1021,64 @@ export default function Home() {
 
       {/* ── Transcript page ── */}
       {showTranscript && current && (
-        <div ref={transcriptPageRef} className="fixed inset-0 z-50 flex flex-col"
+        <div className="fixed inset-0 z-50 flex flex-col"
           style={{
             animation: pullY > 0 ? 'none' : `${closingSheet === 'transcript' ? 'page-down' : 'page-up'} 0.35s cubic-bezier(0.32,0.72,0,1) forwards`,
             background: 'var(--bg)',
             transform: pullY > 0 ? `translateY(${pullY}px)` : undefined,
           }}>
-          <div className="flex items-center justify-between px-5 pt-14 pb-3 flex-shrink-0"
-            style={{ borderBottom: '1px solid var(--separator)' }}>
-            <button
-              onClick={() => closeSheet('transcript', setShowTranscript)}
-              className="flex items-center gap-1 text-[14px] font-medium active:opacity-60"
-              style={{ color: ac }}>
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                <path d="M19 12H5M12 19l-7-7 7-7"/>
-              </svg>
-              返回
-            </button>
-            <p className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>字幕</p>
-            <button
-              onClick={() => setShowTranslation(v => !v)}
-              className="text-[12px] px-3 py-1.5 rounded-full border"
-              style={{
-                borderColor: showTranslation ? ac : 'var(--separator)',
-                background: showTranslation ? `${ac}20` : 'transparent',
-                color: showTranslation ? ac : 'var(--text-secondary)',
-                fontWeight: showTranslation ? 600 : 400,
-              }}>
-              中文翻译
-            </button>
+
+          {/* Header — drag handle + nav */}
+          <div ref={transcriptHeaderRef} className="flex-shrink-0"
+            style={{ borderBottom: '1px solid var(--separator)', paddingTop: 'env(safe-area-inset-top)' }}>
+            <div className="flex justify-center pt-2.5 pb-1">
+              <div className="w-9 h-1 rounded-full" style={{ background: 'var(--separator)' }} />
+            </div>
+            <div className="flex items-center justify-between px-5 pt-1 pb-3">
+              <button
+                onClick={() => closeSheet('transcript', setShowTranscript)}
+                className="flex items-center gap-1 text-[14px] font-medium active:opacity-60 py-1 pr-2"
+                style={{ color: ac }}>
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path d="M19 12H5M12 19l-7-7 7-7"/>
+                </svg>
+                返回
+              </button>
+              <p className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>字幕</p>
+              <button
+                onClick={() => setShowTranslation(v => !v)}
+                className="text-[12px] px-3 py-1.5 rounded-full border"
+                style={{
+                  borderColor: showTranslation ? ac : 'var(--separator)',
+                  background: showTranslation ? `${ac}20` : 'transparent',
+                  color: showTranslation ? ac : 'var(--text-secondary)',
+                  fontWeight: showTranslation ? 600 : 400,
+                }}>
+                中文翻译
+              </button>
+            </div>
           </div>
 
-          <div className="px-5 py-2.5 flex items-center gap-3 flex-shrink-0"
+          {/* Content strip */}
+          <div className="px-4 py-2.5 flex items-center gap-2.5 flex-shrink-0"
             style={{ background: 'var(--bg-raised)', borderBottom: '1px solid var(--separator)' }}>
             <img src={current.thumbnail} alt="" className="w-8 h-8 rounded-lg object-cover flex-shrink-0" />
             <p className="text-[12px] truncate flex-1 font-medium" style={{ color: 'var(--text-secondary)' }}>{current.title}</p>
-            <button onClick={cycleSpeed} className="active:opacity-60">
+            <button onClick={() => {
+              setNoteVideoId(current.id)
+              setNoteText(notes[current.id] || '')
+              setShowNote(true)
+            }} className="active:opacity-60 p-1 flex-shrink-0">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+                stroke={notes[current.id] ? ac : 'var(--text-tertiary)'} strokeWidth="2">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+              </svg>
+            </button>
+            <button onClick={cycleSpeed} className="active:opacity-60 flex-shrink-0">
               <span className="text-[12px] font-bold" style={{ color: ac }}>{playbackRate}x</span>
             </button>
-            <button onClick={togglePlay} className="active:scale-90 transition-transform">
+            <button onClick={togglePlay} className="active:scale-90 transition-transform flex-shrink-0">
               <div className="w-7 h-7 rounded-full flex items-center justify-center" style={{ background: ac }}>
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="white">
                   {playing
@@ -969,13 +1089,14 @@ export default function Home() {
             </button>
           </div>
 
+          {/* Transcript list */}
           <div ref={transcriptListRef} className="flex-1 overflow-y-auto py-3"
             onTouchStart={() => { userScrollingRef.current = true }}
             onTouchEnd={() => { setTimeout(() => { userScrollingRef.current = false }, 3000) }}>
             {transcriptLoading && <p className="text-center py-20 text-sm" style={{ color: 'var(--text-tertiary)' }}>加载字幕中…</p>}
             {transcriptError && <p className="text-center py-20 text-sm" style={{ color: 'var(--text-tertiary)' }}>{transcriptError}</p>}
             {transcriptSegs.map((seg, i) => {
-              const isActive = i === currentSegIdx
+              const isActiveSeg = i === currentSegIdx
               return (
                 <button id={`seg-${i}`} key={i}
                   onClick={() => {
@@ -985,22 +1106,22 @@ export default function Home() {
                     if (a.paused) { a.play().catch(() => {}); setPlaying(true) }
                   }}
                   className="w-full text-left px-5 py-2.5 active:opacity-60">
-                  {isActive && <div className="w-5 h-[2px] rounded-full mb-2" style={{ background: ac }} />}
+                  {isActiveSeg && <div className="w-5 h-[2px] rounded-full mb-2" style={{ background: ac }} />}
                   <p style={{
-                    color: isActive ? 'var(--text-primary)' : 'var(--text-tertiary)',
-                    fontWeight: isActive ? 600 : 400,
-                    fontSize: isActive ? 17 : 15,
+                    color: isActiveSeg ? 'var(--text-primary)' : 'var(--text-tertiary)',
+                    fontWeight: isActiveSeg ? 600 : 400,
+                    fontSize: isActiveSeg ? 17 : 15,
                     lineHeight: 1.6,
                     transition: 'color 0.15s',
                   }}>{seg.ko}</p>
                   {showTranslation && seg.zh && seg.zh !== seg.ko && (
                     <p style={{
-                      color: isActive ? ac : 'var(--text-tertiary)',
-                      fontSize: isActive ? 14 : 13,
-                      fontWeight: isActive ? 500 : 400,
+                      color: isActiveSeg ? ac : 'var(--text-tertiary)',
+                      fontSize: isActiveSeg ? 14 : 13,
+                      fontWeight: isActiveSeg ? 500 : 400,
                       lineHeight: 1.5,
                       marginTop: 4,
-                      opacity: isActive ? 1 : 0.65,
+                      opacity: isActiveSeg ? 1 : 0.65,
                       transition: 'color 0.15s',
                     }}>{seg.zh}</p>
                   )}
@@ -1010,27 +1131,30 @@ export default function Home() {
             <div className="h-24" />
           </div>
 
-          <div className="flex-shrink-0 px-5 pt-3 pb-3"
+          {/* Bottom controls */}
+          <div className="flex-shrink-0 px-5 pt-3"
             style={{
               background: 'var(--bg-glass)',
               backdropFilter: 'blur(24px)',
               WebkitBackdropFilter: 'blur(24px)',
               borderTop: '1px solid var(--separator)',
+              paddingBottom: 'calc(0.75rem + env(safe-area-inset-bottom))',
             }}>
             <div className="flex items-center gap-3 mb-3">
               <span className="text-[11px] tabular-nums w-8 text-right" style={{ color: 'var(--text-tertiary)' }}>{formatTime(elapsed)}</span>
               <div className="flex-1 relative h-[3px] rounded-full" style={{ background: 'var(--separator)' }}>
                 <div className="absolute inset-y-0 left-0 rounded-full" style={{ width: filled, background: ac }} />
                 <input type="range" min="0" max="1" step="0.001" value={progress}
-                  onMouseDown={() => { seekingRef.current = true; seekingRef.current = true }}
-                  onTouchStart={() => { seekingRef.current = true; seekingRef.current = true }}
+                  onMouseDown={() => { seekingRef.current = true }}
+                  onTouchStart={() => { seekingRef.current = true }}
                   onChange={onSeekChange} onMouseUp={onSeekEnd} onTouchEnd={onSeekEnd}
                   className="absolute w-full opacity-0 cursor-pointer"
                   style={{ height: 20, top: -9 }} />
               </div>
               <span className="text-[11px] tabular-nums w-8" style={{ color: 'var(--text-tertiary)' }}>{formatTime(duration)}</span>
             </div>
-            <div className="flex items-center justify-center gap-8">
+            {/* Play controls: -15 | play | +15 centered, timer absolutely right */}
+            <div className="relative flex items-center justify-center gap-10">
               <button onClick={() => skip(-15)} className="active:opacity-50" style={{ color: 'var(--text-secondary)' }}>
                 <svg width="30" height="30" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/>
@@ -1052,15 +1176,14 @@ export default function Home() {
                   <text x="8" y="15" fontSize="5" fill="currentColor" fontWeight="bold">15</text>
                 </svg>
               </button>
-              <button onClick={openTimerSheet} className="active:opacity-50 p-1">
-                <svg width="26" height="26" viewBox="0 0 24 24" fill="none"
+              <button onClick={openTimerSheet} className="absolute right-0 active:opacity-50 p-2">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none"
                   stroke={timerMinutes > 0 || stopAfterCurrent ? ac : 'var(--text-secondary)'} strokeWidth="2">
                   <circle cx="12" cy="13" r="8"/>
                   <path d="M12 9v4l3 3M9 3h6M12 3v2"/>
                 </svg>
               </button>
             </div>
-            <div style={{ height: 'env(safe-area-inset-bottom)' }} />
           </div>
         </div>
       )}
