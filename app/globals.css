@@ -4,6 +4,7 @@
   --bg: #f2f2f7;
   --bg-card: #ffffff;
   --bg-raised: #f0f0f5;
+  --bg-glass: rgba(242,242,247,0.88);
   --hover: rgba(0,0,0,0.05);
   --text-primary: #000000;
   --text-secondary: #6c6c6e;
@@ -16,6 +17,7 @@
     --bg: #000000;
     --bg-card: #1c1c1e;
     --bg-raised: #111111;
+    --bg-glass: rgba(28,28,30,0.92);
     --hover: rgba(255,255,255,0.05);
     --text-primary: #ffffff;
     --text-secondary: #8e8e93;
@@ -24,9 +26,7 @@
   }
 }
 
-* {
-  -webkit-tap-highlight-color: transparent;
-}
+* { -webkit-tap-highlight-color: transparent; }
 
 body {
   background: var(--bg);
@@ -41,12 +41,10 @@ input[type=range] {
   background: transparent;
   cursor: pointer;
 }
-
 input[type=range]::-webkit-slider-runnable-track {
   height: 3px;
   border-radius: 2px;
 }
-
 input[type=range]::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
@@ -55,4 +53,15 @@ input[type=range]::-webkit-slider-thumb {
   border-radius: 50%;
   background: var(--text-primary);
   margin-top: -5.5px;
+}
+
+@keyframes fade-in  { from { opacity: 0 } to { opacity: 1 } }
+@keyframes fade-out { from { opacity: 1 } to { opacity: 0 } }
+@keyframes sheet-up   { from { transform: translateY(100%) } to { transform: translateY(0) } }
+@keyframes sheet-down { from { transform: translateY(0) } to { transform: translateY(100%) } }
+@keyframes page-up    { from { transform: translateY(100%) } to { transform: translateY(0) } }
+@keyframes page-down  { from { transform: translateY(0) } to { transform: translateY(100%) } }
+@keyframes eq-bounce  {
+  0%, 100% { transform: scaleY(0.35); }
+  50%       { transform: scaleY(1); }
 }
