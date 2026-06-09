@@ -19,7 +19,7 @@ jobs:
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
         run: |
           python3 << 'EOF'
-          import json, urllib.request, urllib.parse, os
+          import json, urllib.request, urllib.parse, os, re
 
           API_KEY = os.environ["YOUTUBE_API_KEY"]
 
@@ -43,6 +43,24 @@ jobs:
                       break
               return videos
 
+          def parse_duration(s):
+              m = re.match(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?', s or '')
+              if not m:
+                  return 0
+              return int(m.group(1) or 0)*3600 + int(m.group(2) or 0)*60 + int(m.group(3) or 0)
+
+          def fetch_durations(video_ids):
+              durations = {}
+              for i in range(0, len(video_ids), 50):
+                  batch = video_ids[i:i+50]
+                  params = {"part": "contentDetails", "id": ",".join(batch), "key": API_KEY}
+                  url = "https://www.googleapis.com/youtube/v3/videos?" + urllib.parse.urlencode(params)
+                  with urllib.request.urlopen(url) as r:
+                      data = json.load(r)
+                  for item in data["items"]:
+                      durations[item["id"]] = parse_duration(item["contentDetails"]["duration"])
+              return durations
+
           with open("data/channels.json") as f:
               channels = json.load(f)
 
@@ -53,6 +71,11 @@ jobs:
                   for v in fetch_playlist(pl_id):
                       if v["id"] not in all_videos and v["title"] not in ("Private video", "Deleted video"):
                           all_videos[v["id"]] = v
+
+              durations = fetch_durations(list(all_videos.keys()))
+              for vid_id, v in all_videos.items():
+                  if durations.get(vid_id):
+                      v["duration"] = durations[vid_id]
 
               videos_sorted = sorted(all_videos.values(), key=lambda v: v["published"], reverse=True)
 
