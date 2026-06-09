@@ -60,6 +60,23 @@ const RAW_AUDIO_BASE = process.env.NEXT_PUBLIC_AUDIO_BASE || '/audio/'
 const AUDIO_BASE = RAW_AUDIO_BASE.endsWith('/') ? RAW_AUDIO_BASE : RAW_AUDIO_BASE + '/'
 const channels: Channel[] = channelsData
 
+function cleanTitle(title: string): string {
+  let t = title
+  // Remove 【English brackets】
+  t = t.replace(/【[^】]*[a-zA-Z]{2,}[^】]*】\s*/g, '')
+  // Remove (parentheses) that contain no Korean
+  t = t.replace(/\([^)]*\)/g, m => /[가-힣]/.test(m) ? m : '')
+  // Remove "Didi의 한국문화 Podcast" prefix
+  t = t.replace(/^Didi의\s+한국문화\s+Podcast\s*/i, '')
+  // Take only the part before first |
+  t = t.split('|')[0]
+  // Remove ✶ and everything after (series labels, episode numbers)
+  t = t.split('✶')[0]
+  // Clean up trailing punctuation and whitespace
+  t = t.trim().replace(/\s{2,}/g, ' ').replace(/[\s·\-–—]+$/, '').trim()
+  return t || title
+}
+
 function formatTime(s: number) {
   if (!s || isNaN(s)) return '0:00'
   return `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`
@@ -339,7 +356,7 @@ export default function Home() {
   function setupMediaSession(video: Video) {
     if (!('mediaSession' in navigator)) return
     navigator.mediaSession.metadata = new MediaMetadata({
-      title: video.title,
+      title: cleanTitle(video.title),
       artist: activeChannel.name,
       artwork: [{ src: video.thumbnail, sizes: '480x360', type: 'image/jpeg' }],
     })
@@ -631,7 +648,7 @@ export default function Home() {
                         color: isActive ? ac : 'var(--text-primary)',
                         fontWeight: isActive ? 600 : 500,
                       }}>
-                      {video.title}
+                      {cleanTitle(video.title)}
                     </p>
                     <div className="flex items-center gap-2 mt-1 flex-wrap">
                       <p className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
@@ -794,7 +811,7 @@ export default function Home() {
                 style={{ background: 'var(--bg-raised)' }} />
               <div className="flex-1 min-w-0">
                 <p className="text-[13px] font-semibold truncate" style={{ color: 'var(--text-primary)' }}>
-                  {current.title}
+                  {cleanTitle(current.title)}
                 </p>
                 <p className="text-[11px] mt-0.5 flex items-center gap-1.5 tabular-nums"
                   style={{ color: 'var(--text-tertiary)' }}>
@@ -878,7 +895,7 @@ export default function Home() {
           <div className="px-5 py-2.5 flex items-center gap-3 flex-shrink-0"
             style={{ background: 'var(--bg-raised)', borderBottom: '1px solid var(--separator)' }}>
             <img src={current.thumbnail} alt="" className="w-8 h-8 rounded-lg object-cover flex-shrink-0" />
-            <p className="text-[12px] truncate flex-1 font-medium" style={{ color: 'var(--text-secondary)' }}>{current.title}</p>
+            <p className="text-[12px] truncate flex-1 font-medium" style={{ color: 'var(--text-secondary)' }}>{cleanTitle(current.title)}</p>
             <button onClick={cycleSpeed} className="active:opacity-60">
               <span className="text-[12px] font-bold" style={{ color: ac }}>{playbackRate}x</span>
             </button>
