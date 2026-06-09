@@ -40,6 +40,11 @@ const TIMER_OPTIONS = [
 
 const SPEED_OPTIONS = [0.75, 1, 1.25, 1.5, 2]
 
+// 音频托管地址（Windows + Cloudflare Tunnel）。在 Vercel 环境变量设 NEXT_PUBLIC_AUDIO_BASE，
+// 例如 https://audio.你的域名.com/ ，本地开发回落到 /audio/
+const RAW_AUDIO_BASE = process.env.NEXT_PUBLIC_AUDIO_BASE || '/audio/'
+const AUDIO_BASE = RAW_AUDIO_BASE.endsWith('/') ? RAW_AUDIO_BASE : RAW_AUDIO_BASE + '/'
+
 const channels: Channel[] = channelsData
 
 function formatTime(s: number) {
@@ -77,7 +82,7 @@ export default function Home() {
   const [videoProgress, setVideoProgress] = useState<Record<string, number>>({})
   const [filter, setFilter] = useState<'all' | 'inprogress' | 'done'>('all')
 
-  const playerRef = useRef<YT.Player | null>(null)
+  const playerRef = useRef<HTMLAudioElement | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const seekingRef = useRef(false)
@@ -100,14 +105,6 @@ export default function Home() {
       })
       .catch(console.error)
   }, [activeChannelId])
-
-  useEffect(() => {
-    if (document.getElementById('yt-iframe-api')) return
-    const tag = document.createElement('script')
-    tag.id = 'yt-iframe-api'
-    tag.src = 'https://www.youtube.com/iframe_api'
-    document.head.appendChild(tag)
-  }, [])
 
   useEffect(() => {
     try {
@@ -139,7 +136,7 @@ export default function Home() {
     const onHide = () => {
       if (!currentIdRef.current || !playerRef.current) return
       try {
-        saveProgress(currentIdRef.current, playerRef.current.getCurrentTime() || 0, playerRef.current.getDuration() || 0)
+        saveProgress(currentIdRef.current, playerRef.current.currentTime || 0, playerRef.current.duration || 0)
       } catch {}
     }
     document.addEventListener('visibilitychange', onHide)
@@ -149,15 +146,20 @@ export default function Home() {
   const startPolling = useCallback(() => {
     if (pollRef.current) clearInterval(pollRef.current)
     pollRef.current = setInterval(() => {
-      if (!playerRef.current || seekingRef.current) return
+      const a = playerRef.current
+      if (!a || seekingRef.current) return
       try {
-        const state = playerRef.current.getPlayerState()
-        const cur = playerRef.current.getCurrentTime() || 0
-        const dur = playerRef.current.getDuration() || 0
-        setPlaying(state === 1)
+        const cur = a.currentTime || 0
+        const dur = a.duration || 0
+        setPlaying(!a.paused)
         setElapsed(cur)
         setDuration(dur)
         setProgress(dur > 0 ? cur / dur : 0)
+        if ('mediaSession' in navigator && dur > 0 && isFinite(dur)) {
+          try {
+            navigator.mediaSession.setPositionState({ duration: dur, position: Math.min(cur, dur), playbackRate: a.playbackRate })
+          } catch {}
+        }
         if (currentIdRef.current && cur - lastProgressSaveRef.current >= 5) {
           lastProgressSaveRef.current = cur
           saveProgress(currentIdRef.current, cur, dur)
@@ -166,31 +168,39 @@ export default function Home() {
     }, 500)
   }, [saveProgress])
 
-  function createPlayer(videoId: string) {
-    if (playerRef.current) {
-      playerRef.current.loadVideoById(videoId)
-      playerRef.current.setPlaybackRate(playbackRate)
-      if (savedPosRef.current > 5) playerRef.current.seekTo(savedPosRef.current, true)
-      setPlaying(true)
-      return
-    }
-    playerRef.current = new (window as any).YT.Player('yt-player', {
-      videoId,
-      playerVars: { autoplay: 1, controls: 0, playsinline: 1, rel: 0 },
-      events: {
-        onReady: (e: YT.PlayerEvent) => {
-          if (savedPosRef.current > 5) e.target.seekTo(savedPosRef.current, true)
-          e.target.setPlaybackRate(playbackRate)
-          e.target.playVideo()
-          setPlaying(true)
-          startPolling()
-        },
-        onStateChange: (e: YT.OnStateChangeEvent) => {
-          setPlaying(e.data === 1)
-        },
-      },
+  function ensureAudio(): HTMLAudioElement {
+    if (playerRef.current) return playerRef.current
+    const a = new Audio()
+    a.preload = 'metadata'
+    a.addEventListener('play', () => setPlaying(true))
+    a.addEventListener('pause', () => setPlaying(false))
+    a.addEventListener('ended', () => {
+      setPlaying(false)
+      if (currentIdRef.current && a.duration > 0) saveProgress(currentIdRef.current, a.duration, a.duration)
     })
-    startPolling()
+    a.addEventListener('loadedmetadata', () => {
+      if (savedPosRef.current > 5 && a.duration && savedPosRef.current < a.duration - 2) {
+        a.currentTime = savedPosRef.current
+      }
+    })
+    playerRef.current = a
+    return a
+  }
+
+  function setupMediaSession(video: Video) {
+    if (!('mediaSession' in navigator)) return
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: video.title,
+      artist: activeChannel.name,
+      artwork: [{ src: video.thumbnail, sizes: '480x360', type: 'image/jpeg' }],
+    })
+    navigator.mediaSession.setActionHandler('play', () => { playerRef.current?.play(); setPlaying(true) })
+    navigator.mediaSession.setActionHandler('pause', () => { playerRef.current?.pause(); setPlaying(false) })
+    navigator.mediaSession.setActionHandler('seekbackward', () => skip(-15))
+    navigator.mediaSession.setActionHandler('seekforward', () => skip(30))
+    navigator.mediaSession.setActionHandler('seekto', (d) => {
+      if (playerRef.current && typeof d.seekTime === 'number') playerRef.current.currentTime = d.seekTime
+    })
   }
 
   function play(video: Video) {
@@ -202,22 +212,27 @@ export default function Home() {
     } catch { savedPosRef.current = 0 }
     setCurrent(video)
     setProgress(0); setElapsed(0); setDuration(0)
-    if (!(window as any).YT?.Player) {
-      ;(window as any).onYouTubeIframeAPIReady = () => createPlayer(video.id)
-    } else {
-      createPlayer(video.id)
-    }
+    const a = ensureAudio()
+    a.src = AUDIO_BASE + encodeURIComponent(video.id) + '.m4a'
+    a.playbackRate = playbackRate
+    a.play().catch(() => {})
+    setPlaying(true)
+    startPolling()
+    setupMediaSession(video)
   }
 
   function togglePlay() {
-    if (!playerRef.current) return
-    playing ? playerRef.current.pauseVideo() : playerRef.current.playVideo()
-    setPlaying(!playing)
+    const a = playerRef.current
+    if (!a) return
+    if (a.paused) { a.play().catch(() => {}); setPlaying(true) }
+    else { a.pause(); setPlaying(false) }
   }
 
   function skip(seconds: number) {
-    if (!playerRef.current) return
-    playerRef.current.seekTo(Math.max(0, (playerRef.current.getCurrentTime() || 0) + seconds), true)
+    const a = playerRef.current
+    if (!a) return
+    const dur = a.duration || 0
+    a.currentTime = Math.max(0, Math.min(dur || Infinity, (a.currentTime || 0) + seconds))
   }
 
   function onSeekChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -227,7 +242,7 @@ export default function Home() {
   }
 
   function onSeekEnd() {
-    playerRef.current?.seekTo(progress * duration, true)
+    if (playerRef.current) playerRef.current.currentTime = progress * duration
     seekingRef.current = false
     setSeeking(false)
   }
@@ -244,7 +259,8 @@ export default function Home() {
       setTimeLeft(remaining)
       if (remaining <= 0) {
         clearInterval(timerRef.current!)
-        playerRef.current?.pauseVideo()
+        playerRef.current?.pause()
+        setPlaying(false)
         setTimeLeft(null); setTimerMinutes(0)
       }
     }, 1000)
@@ -254,7 +270,7 @@ export default function Home() {
     const idx = SPEED_OPTIONS.indexOf(playbackRate)
     const next = SPEED_OPTIONS[(idx + 1) % SPEED_OPTIONS.length]
     setPlaybackRate(next)
-    playerRef.current?.setPlaybackRate(next)
+    if (playerRef.current) playerRef.current.playbackRate = next
   }
 
   function toggleFavorite(videoId: string, e: React.MouseEvent) {
@@ -309,11 +325,6 @@ export default function Home() {
 
   return (
     <div className="flex flex-col h-dvh overflow-hidden" style={{ background: 'var(--bg)' }}>
-      {/* Hidden YouTube player */}
-      <div className="fixed -top-full -left-full w-1 h-1 overflow-hidden">
-        <div id="yt-player" />
-      </div>
-
       {/* Scrollable content */}
       <div className="flex-1 overflow-y-auto">
 
@@ -649,8 +660,10 @@ export default function Home() {
                   id={`seg-${i}`}
                   key={i}
                   onClick={() => {
-                    playerRef.current?.seekTo(seg.start, true)
-                    if (!playing) playerRef.current?.playVideo()
+                    const a = playerRef.current
+                    if (!a) return
+                    a.currentTime = seg.start
+                    if (a.paused) { a.play().catch(() => {}); setPlaying(true) }
                   }}
                   className="w-full text-left mb-1 px-3 py-2 rounded-xl transition-colors"
                   style={{ background: isActive ? 'var(--bg-card)' : 'transparent' }}
