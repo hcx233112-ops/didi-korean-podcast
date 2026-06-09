@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import channelsData from '@/data/channels.json'
 
 interface Channel { id: string; name: string; description: string; initial: string; color: string }
-interface Video { id: string; title: string; published: string; thumbnail: string }
+interface Video { id: string; title: string; published: string; thumbnail: string; duration?: number }
 interface TranscriptSegment { start: number; end: number; ko: string; zh: string }
 interface ChannelVideos { channelName: string; videos: Video[] }
 interface SyncData {
@@ -574,6 +574,8 @@ export default function Home() {
             const prog = videoProgress[video.id] ?? 0
             const isDone = prog >= DONE_THRESHOLD
             const det = videoDetails[video.id]
+            const totalDur = video.duration ?? det?.dur
+            const pct = prog > 0 ? Math.round(prog * 100) : 0
             return (
               <div key={video.id} className="relative">
                 {isActive && (
@@ -635,13 +637,18 @@ export default function Home() {
                       <p className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
                         {formatDate(video.published)}
                       </p>
-                      {det && !isActive && (
+                      {totalDur !== undefined && !isActive && (
                         <p className="text-[11px] tabular-nums" style={{ color: 'var(--text-tertiary)' }}>
-                          {isDone
-                            ? formatTime(det.dur)
-                            : <>{formatTime(det.pos)}<span style={{ color: 'var(--text-tertiary)', opacity: 0.5 }}> / {formatTime(det.dur)}</span></>
+                          {det && !isDone
+                            ? <>{formatTime(det.pos)}<span style={{ opacity: 0.5 }}> / {formatTime(totalDur)}</span></>
+                            : formatTime(totalDur)
                           }
                         </p>
+                      )}
+                      {pct > 0 && !isDone && !isActive && (
+                        <span className="text-[10px] tabular-nums font-medium" style={{ color: ac, opacity: 0.8 }}>
+                          {pct}%
+                        </span>
                       )}
                       {isDone && !isActive && (
                         <button onClick={(e) => resetProgress(video.id, e)}
