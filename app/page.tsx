@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import channelsData from '@/data/channels.json'
 
-interface Channel { id: string; name: string; description: string; initial: string; color: string }
+interface Channel { id: string; name: string; description: string; initial: string; color: string; channelId?: string }
 interface Video { id: string; title: string; published: string; thumbnail: string; duration?: number }
 interface TranscriptSegment { start: number; end: number; ko: string; zh: string }
 interface ChannelVideos { channelName: string; videos: Video[] }
@@ -132,7 +132,7 @@ export default function Home() {
     channels.forEach(ch => {
       const cached = localStorage.getItem(`podcast-avatar-${ch.id}`)
       if (cached) { setChannelAvatars(prev => ({ ...prev, [ch.id]: cached })); return }
-      fetch(`/api/avatar?channelId=${ch.id}`)
+      fetch(`/api/avatar?channelId=${ch.channelId || ch.id}`)
         .then(r => r.json())
         .then(({ url }: { url: string | null }) => {
           if (!url) return
@@ -405,8 +405,9 @@ export default function Home() {
   }
 
   function openTimerSheet() {
-    setPickerHours(Math.floor(timerMinutes / 60))
-    setPickerMins(timerMinutes % 60)
+    const base = timerMinutes > 0 ? timerMinutes : 30
+    setPickerHours(Math.floor(base / 60))
+    setPickerMins(base % 60)
     setShowTimer(true)
   }
 
@@ -765,9 +766,14 @@ export default function Home() {
             <button onClick={() => startTimer(pickerHours * 60 + pickerMins)}
               className="w-full py-3.5 rounded-2xl text-[16px] font-semibold mt-3 active:opacity-80"
               style={{ background: ac, color: '#fff' }}>
-              {pickerHours * 60 + pickerMins > 0
-                ? `${pickerHours > 0 ? pickerHours + ' 小时 ' : ''}${pickerMins > 0 ? pickerMins + ' 分钟后停止' : '后停止'}`
-                : timerMinutes > 0 ? '关闭定时' : '不设定时'}
+              {(() => {
+                const t = pickerHours * 60 + pickerMins
+                if (t <= 0) return timerMinutes > 0 ? '关闭定时' : '不设定时'
+                const parts = []
+                if (pickerHours > 0) parts.push(`${pickerHours} 小时`)
+                if (pickerMins > 0) parts.push(`${pickerMins} 分钟`)
+                return parts.join(' ') + '后停止'
+              })()}
             </button>
           </div>
         </div>
