@@ -1,49 +1,43 @@
 #!/usr/bin/env python3
 """
 补翻译：把 zh==ko 的 segments 重新翻译成中文
-支持断点续传，已翻的文件跳过
+使用 Google Translate 公开端点，支持断点续传
 """
-import json, sys, time, concurrent.futures
+import json, sys, time, requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from deep_translator import GoogleTranslator
 
 sys.stdout.reconfigure(encoding="utf-8")
 sys.stderr.reconfigure(encoding="utf-8")
 
 TRANSCRIPTS_DIR = Path(__file__).parent.parent / "public" / "data" / "transcripts"
-BATCH_SIZE = 20
-SLEEP_BETWEEN_BATCHES = 1.0
+WORKERS = 15  # 并发请求数
 
 
-def run_with_timeout(fn, timeout=45):
-    ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    future = ex.submit(fn)
-    try:
-        return future.result(timeout=timeout)
-    except concurrent.futures.TimeoutError:
-        ex.shutdown(wait=False, cancel_futures=True)
-        raise TimeoutError(f"翻译超时 {timeout}s")
-    finally:
-        ex.shutdown(wait=False)
+def gtrans(text):
+    for attempt in range(3):
+        try:
+            r = requests.get(
+                "https://translate.googleapis.com/translate_a/single",
+                params={"client": "gtx", "sl": "ko", "tl": "zh-CN", "dt": "t", "q": text},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=15,
+            )
+            data = r.json()
+            return "".join(seg[0] for seg in data[0] if seg[0])
+        except Exception as e:
+            if attempt == 2:
+                return text   # 翻译失败保留原文
+            time.sleep(1)
 
 
-def translate_batch(texts):
-    result = []
-    for i in range(0, len(texts), BATCH_SIZE):
-        batch = texts[i : i + BATCH_SIZE]
-        for attempt in range(3):
-            try:
-                t = GoogleTranslator(source="ko", target="zh-CN")
-                translated = run_with_timeout(lambda: t.translate_batch(batch))
-                result.extend(tr or orig for tr, orig in zip(translated, batch))
-                break
-            except Exception as e:
-                print(f"  批次 {i//BATCH_SIZE+1} 第{attempt+1}次失败: {e}", flush=True)
-                time.sleep(3)
-        else:
-            result.extend(batch)
-        time.sleep(SLEEP_BETWEEN_BATCHES)
-    return result
+def translate_all(texts):
+    results = [None] * len(texts)
+    with ThreadPoolExecutor(max_workers=WORKERS) as ex:
+        futures = {ex.submit(gtrans, t): i for i, t in enumerate(texts)}
+        for f in as_completed(futures):
+            results[futures[f]] = f.result()
+    return results
 
 
 def needs_translation(segs):
@@ -56,10 +50,9 @@ def process_file(path):
     if not segs or not needs_translation(segs):
         return False
 
-    indices = [i for i, s in enumerate(segs) if s.get("zh", "") == s.get("ko", "") and s.get("ko", "").strip()]
+    indices  = [i for i, s in enumerate(segs) if s.get("zh", "") == s.get("ko", "") and s.get("ko", "").strip()]
     ko_texts = [segs[i]["ko"] for i in indices]
-
-    zh_texts = translate_batch(ko_texts)
+    zh_texts = translate_all(ko_texts)
 
     for i, zh in zip(indices, zh_texts):
         segs[i]["zh"] = zh
@@ -69,10 +62,9 @@ def process_file(path):
 
 
 def main():
-    files = sorted(TRANSCRIPTS_DIR.glob("*.json"))
-    total = len(files)
-    done = 0
-    skipped = 0
+    files   = sorted(TRANSCRIPTS_DIR.glob("*.json"))
+    total   = len(files)
+    done    = skipped = 0
 
     print(f"共 {total} 个文件，开始补翻译...\n", flush=True)
 
@@ -83,7 +75,7 @@ def main():
             skipped += 1
             continue
 
-        untrans = sum(1 for s in segs if s.get("zh","") == s.get("ko","") and s.get("ko","").strip())
+        untrans = sum(1 for s in segs if s.get("zh", "") == s.get("ko", "") and s.get("ko", "").strip())
         print(f"[{i}/{total}] {f.stem} ({untrans} 条)...", end=" ", flush=True)
         try:
             process_file(f)
@@ -92,7 +84,7 @@ def main():
         except Exception as e:
             print(f"失败: {e}", flush=True)
 
-    print(f"\n完成 {done} 个，跳过 {skipped} 个")
+    print(f"\n完成 {done} 个，跳过 {skipped} 个", flush=True)
 
 
 if __name__ == "__main__":
