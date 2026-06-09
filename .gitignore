@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# 提取的播客音频（体积大，不进 git，存本地由 Cloudflare Tunnel 暴露）
+/audio
