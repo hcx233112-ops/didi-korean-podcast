@@ -4,7 +4,6 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "播客收藏",
   description: "我的播客收藏，锁屏不断播",
-  appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "播客收藏" },
 };
 
 export const viewport: Viewport = {

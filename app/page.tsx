@@ -158,6 +158,7 @@ export default function Home() {
         setProgress(dur > 0 ? cur / dur : 0)
         if ('mediaSession' in navigator && dur > 0 && isFinite(dur)) {
           try {
+            navigator.mediaSession.playbackState = a.paused ? 'paused' : 'playing'
             navigator.mediaSession.setPositionState({ duration: dur, position: Math.min(cur, dur), playbackRate: a.playbackRate })
           } catch {}
         }
@@ -195,8 +196,16 @@ export default function Home() {
       artist: activeChannel.name,
       artwork: [{ src: video.thumbnail, sizes: '480x360', type: 'image/jpeg' }],
     })
-    navigator.mediaSession.setActionHandler('play', () => { playerRef.current?.play(); setPlaying(true) })
-    navigator.mediaSession.setActionHandler('pause', () => { playerRef.current?.pause(); setPlaying(false) })
+    navigator.mediaSession.setActionHandler('play', () => {
+      playerRef.current?.play()
+      setPlaying(true)
+      navigator.mediaSession.playbackState = 'playing'
+    })
+    navigator.mediaSession.setActionHandler('pause', () => {
+      playerRef.current?.pause()
+      setPlaying(false)
+      navigator.mediaSession.playbackState = 'paused'
+    })
     navigator.mediaSession.setActionHandler('seekbackward', () => skip(-15))
     navigator.mediaSession.setActionHandler('seekforward', () => skip(30))
     navigator.mediaSession.setActionHandler('seekto', (d) => {
@@ -327,7 +336,8 @@ export default function Home() {
   return (
     <div className="flex flex-col h-dvh overflow-hidden" style={{ background: 'var(--bg)' }}>
       {/* Hidden audio element — must be in DOM for iOS background playback */}
-      <audio ref={audioElRef} playsInline preload="metadata" style={{ display: 'none' }} />
+      <audio ref={audioElRef} playsInline preload="auto"
+        style={{ position: 'absolute', width: 0, height: 0, opacity: 0, pointerEvents: 'none' }} />
       {/* Scrollable content */}
       <div className="flex-1 overflow-y-auto">
 
