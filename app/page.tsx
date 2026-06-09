@@ -83,6 +83,7 @@ export default function Home() {
   const [filter, setFilter] = useState<'all' | 'inprogress' | 'done'>('all')
 
   const playerRef = useRef<HTMLAudioElement | null>(null)
+  const audioElRef = useRef<HTMLAudioElement | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const seekingRef = useRef(false)
@@ -170,7 +171,7 @@ export default function Home() {
 
   function ensureAudio(): HTMLAudioElement {
     if (playerRef.current) return playerRef.current
-    const a = new Audio()
+    const a = audioElRef.current!
     a.preload = 'metadata'
     a.addEventListener('play', () => setPlaying(true))
     a.addEventListener('pause', () => setPlaying(false))
@@ -325,6 +326,8 @@ export default function Home() {
 
   return (
     <div className="flex flex-col h-dvh overflow-hidden" style={{ background: 'var(--bg)' }}>
+      {/* Hidden audio element — must be in DOM for iOS background playback */}
+      <audio ref={audioElRef} playsInline preload="metadata" style={{ display: 'none' }} />
       {/* Scrollable content */}
       <div className="flex-1 overflow-y-auto">
 
