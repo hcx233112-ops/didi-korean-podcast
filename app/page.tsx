@@ -13,6 +13,7 @@ interface SyncData {
 }
 
 const DONE_THRESHOLD = 0.9
+const AVATAR_TTL = 7 * 24 * 3600 * 1000
 
 const HOUR_VALUES = [0, 1, 2, 3, 4, 5]
 const MIN_VALUES = Array.from({ length: 60 }, (_, i) => i)
@@ -122,22 +123,40 @@ export default function Home() {
   const stopAfterCurrentRef = useRef(false)
   const videosRef = useRef<Video[]>([])
   const playFnRef = useRef<(v: Video) => void>(() => {})
+  const transcriptPageRef = useRef<HTMLDivElement>(null)
+  const pullStartYRef = useRef(0)
+  const pullYRef = useRef(0)
+  const pullActiveRef = useRef(false)
+  const [pullY, setPullY] = useState(0)
 
   const activeChannel = channels.find(c => c.id === activeChannelId) ?? channels[0]
   const videos = channelVideos[activeChannelId] ?? []
   const ac = activeChannel.color
 
-  // ── Load channel avatars (cached in localStorage) ──
+  // ── Load channel avatars (cached with 7-day TTL) ──
   useEffect(() => {
     channels.forEach(ch => {
-      const cached = localStorage.getItem(`podcast-avatar-${ch.id}`)
-      if (cached) { setChannelAvatars(prev => ({ ...prev, [ch.id]: cached })); return }
+      const raw = localStorage.getItem(`podcast-avatar-${ch.id}`)
+      let cachedUrl: string | null = null
+      let needsFetch = true
+      if (raw) {
+        try {
+          const obj = JSON.parse(raw)
+          cachedUrl = obj.url ?? null
+          needsFetch = !obj.ts || Date.now() - obj.ts >= AVATAR_TTL
+        } catch {
+          cachedUrl = raw   // old plain-string format
+          needsFetch = true // re-fetch to update to new format
+        }
+      }
+      if (cachedUrl) setChannelAvatars(prev => ({ ...prev, [ch.id]: cachedUrl! }))
+      if (!needsFetch) return
       fetch(`/api/avatar?channelId=${ch.channelId || ch.id}`)
         .then(r => r.json())
         .then(({ url }: { url: string | null }) => {
           if (!url) return
           setChannelAvatars(prev => ({ ...prev, [ch.id]: url }))
-          localStorage.setItem(`podcast-avatar-${ch.id}`, url)
+          localStorage.setItem(`podcast-avatar-${ch.id}`, JSON.stringify({ url, ts: Date.now() }))
         })
         .catch(() => {})
     })
@@ -286,6 +305,47 @@ export default function Home() {
     document.addEventListener('visibilitychange', onHide)
     return () => document.removeEventListener('visibilitychange', onHide)
   }, [saveProgress])
+
+  // ── Pull-to-close transcript ──
+  useEffect(() => {
+    if (!showTranscript) { setPullY(0); return }
+    const el = transcriptPageRef.current
+    if (!el) return
+    const onStart = (e: TouchEvent) => {
+      pullStartYRef.current = e.touches[0].clientY
+      pullActiveRef.current = false
+    }
+    const onMove = (e: TouchEvent) => {
+      const listEl = transcriptListRef.current
+      if (listEl && listEl.scrollTop > 0) { pullActiveRef.current = false; return }
+      const delta = e.touches[0].clientY - pullStartYRef.current
+      if (delta > 8) {
+        pullActiveRef.current = true
+        const y = Math.min(delta * 0.4, 200)
+        pullYRef.current = y
+        setPullY(y)
+        e.preventDefault()
+      }
+    }
+    const onEnd = () => {
+      if (pullActiveRef.current && pullYRef.current > 80) {
+        setPullY(0)
+        closeSheet('transcript', setShowTranscript)
+      } else {
+        setPullY(0)
+      }
+      pullYRef.current = 0
+      pullActiveRef.current = false
+    }
+    el.addEventListener('touchstart', onStart, { passive: true })
+    el.addEventListener('touchmove', onMove, { passive: false })
+    el.addEventListener('touchend', onEnd, { passive: true })
+    return () => {
+      el.removeEventListener('touchstart', onStart)
+      el.removeEventListener('touchmove', onMove)
+      el.removeEventListener('touchend', onEnd)
+    }
+  }, [showTranscript])
 
   const startPolling = useCallback(() => {
     if (pollRef.current) clearInterval(pollRef.current)
@@ -857,10 +917,11 @@ export default function Home() {
 
       {/* ── Transcript page ── */}
       {showTranscript && current && (
-        <div className="fixed inset-0 z-50 flex flex-col"
+        <div ref={transcriptPageRef} className="fixed inset-0 z-50 flex flex-col"
           style={{
-            animation: `${closingSheet === 'transcript' ? 'page-down' : 'page-up'} 0.35s cubic-bezier(0.32,0.72,0,1) forwards`,
+            animation: pullY > 0 ? 'none' : `${closingSheet === 'transcript' ? 'page-down' : 'page-up'} 0.35s cubic-bezier(0.32,0.72,0,1) forwards`,
             background: 'var(--bg)',
+            transform: pullY > 0 ? `translateY(${pullY}px)` : undefined,
           }}>
           <div className="flex items-center justify-between px-5 pt-14 pb-3 flex-shrink-0"
             style={{ borderBottom: '1px solid var(--separator)' }}>
@@ -966,7 +1027,7 @@ export default function Home() {
               </div>
               <span className="text-[11px] tabular-nums w-8" style={{ color: 'var(--text-tertiary)' }}>{formatTime(duration)}</span>
             </div>
-            <div className="flex items-center justify-center gap-12">
+            <div className="flex items-center justify-center gap-8">
               <button onClick={() => skip(-15)} className="active:opacity-50" style={{ color: 'var(--text-secondary)' }}>
                 <svg width="30" height="30" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/>
@@ -986,6 +1047,13 @@ export default function Home() {
                 <svg width="30" height="30" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M12 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6h2c0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8z"/>
                   <text x="8" y="15" fontSize="5" fill="currentColor" fontWeight="bold">15</text>
+                </svg>
+              </button>
+              <button onClick={openTimerSheet} className="active:opacity-50 p-1">
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none"
+                  stroke={timerMinutes > 0 || stopAfterCurrent ? ac : 'var(--text-secondary)'} strokeWidth="2">
+                  <circle cx="12" cy="13" r="8"/>
+                  <path d="M12 9v4l3 3M9 3h6M12 3v2"/>
                 </svg>
               </button>
             </div>
