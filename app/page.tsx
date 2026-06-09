@@ -36,8 +36,6 @@ function ScrollPicker({ values, selected, onChange, label }: {
   }
   return (
     <div className="relative flex-1 select-none">
-      <div className="absolute inset-x-1 rounded-xl pointer-events-none z-10"
-        style={{ top: H * 2, height: H, background: 'var(--bg-raised)' }} />
       <div ref={ref} onScroll={handleScroll}
         className="scroll-picker overflow-y-scroll"
         style={{ height: H * 5, scrollSnapType: 'y mandatory' }}>
@@ -51,6 +49,8 @@ function ScrollPicker({ values, selected, onChange, label }: {
         ))}
         <div style={{ height: H * 2 }} />
       </div>
+      <div className="absolute inset-x-0 pointer-events-none"
+        style={{ top: H * 2, height: H, borderTop: '1px solid var(--separator)', borderBottom: '1px solid var(--separator)' }} />
       <p className="text-[11px] text-center pt-1" style={{ color: 'var(--text-tertiary)' }}>{label}</p>
     </div>
   )
