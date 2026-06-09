@@ -7,6 +7,12 @@ interface Channel { id: string; name: string; description: string; initial: stri
 interface Video { id: string; title: string; published: string; thumbnail: string }
 interface TranscriptSegment { start: number; end: number; ko: string; zh: string }
 interface ChannelVideos { channelName: string; videos: Video[] }
+interface SyncData {
+  favorites: string[]
+  progress: Record<string, { pos: number; dur: number }>
+}
+
+const DONE_THRESHOLD = 0.9
 
 const TIMER_OPTIONS = [
   { label: '关闭', minutes: 0 },
@@ -22,14 +28,21 @@ const channels: Channel[] = channelsData
 
 function formatTime(s: number) {
   if (!s || isNaN(s)) return '0:00'
-  const m = Math.floor(s / 60)
-  return `${m}:${Math.floor(s % 60).toString().padStart(2, '0')}`
+  return `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`
 }
 function formatDate(s: string) {
   return new Date(s).toLocaleDateString('zh-CN', { year: 'numeric', month: 'short', day: 'numeric' })
 }
 
 type SheetName = 'channel' | 'timer' | 'transcript'
+type FilterType = 'all' | 'fav' | 'inprogress' | 'done'
+
+const FILTERS: { key: FilterType; label: string }[] = [
+  { key: 'all', label: '全部' },
+  { key: 'fav', label: '收藏' },
+  { key: 'inprogress', label: '进行中' },
+  { key: 'done', label: '已听完' },
+]
 
 export default function Home() {
   const [activeChannelId, setActiveChannelId] = useState(channels[0].id)
@@ -53,30 +66,36 @@ export default function Home() {
   const [playbackRate, setPlaybackRate] = useState(1)
   const [favorites, setFavorites] = useState<Set<string>>(new Set())
   const [videoProgress, setVideoProgress] = useState<Record<string, number>>({})
-  const [filter, setFilter] = useState<'all' | 'inprogress' | 'done'>('all')
+  const [filter, setFilter] = useState<FilterType>('all')
   const [closingSheet, setClosingSheet] = useState<SheetName | null>(null)
+  const [syncing, setSyncing] = useState(false)
 
   const playerRef = useRef<HTMLAudioElement | null>(null)
   const audioElRef = useRef<HTMLAudioElement | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const syncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const seekingRef = useRef(false)
   const transcriptListRef = useRef<HTMLDivElement>(null)
   const userScrollingRef = useRef(false)
   const savedPosRef = useRef(0)
   const currentIdRef = useRef<string | null>(null)
   const lastProgressSaveRef = useRef(0)
+  const favoritesRef = useRef<Set<string>>(new Set())
 
   const activeChannel = channels.find(c => c.id === activeChannelId) ?? channels[0]
   const videos = channelVideos[activeChannelId] ?? []
   const ac = activeChannel.color
 
-  // Animate out then unmount
+  // Keep favoritesRef current for async usage
+  useEffect(() => { favoritesRef.current = favorites }, [favorites])
+
   function closeSheet(name: SheetName, setter: (v: boolean) => void) {
     setClosingSheet(name)
     setTimeout(() => { setter(false); setClosingSheet(null) }, 300)
   }
 
+  // ── Load videos ──
   useEffect(() => {
     if (channelVideos[activeChannelId]) return
     fetch(`/data/videos/${activeChannelId}.json`)
@@ -85,11 +104,11 @@ export default function Home() {
       .catch(console.error)
   }, [activeChannelId])
 
-  // Load persisted preferences + progress
+  // ── Load local preferences ──
   useEffect(() => {
     try {
       const fav = localStorage.getItem('podcast-favorites')
-      if (fav) setFavorites(new Set(JSON.parse(fav)))
+      if (fav) { const s = new Set<string>(JSON.parse(fav)); setFavorites(s); favoritesRef.current = s }
       const trans = localStorage.getItem('podcast-translation')
       if (trans !== null) setShowTranslation(trans === '1')
     } catch {}
@@ -98,13 +117,73 @@ export default function Home() {
       const key = localStorage.key(i)
       if (key?.startsWith('podcast-pos-')) {
         try {
-          const d = JSON.parse(localStorage.getItem(key) || '{}')
+          const d = JSON.parse(localStorage.getItem(key)!)
           if (d.pos > 0 && d.dur > 0) prog[key.replace('podcast-pos-', '')] = d.pos / d.dur
         } catch {}
       }
     }
     setVideoProgress(prog)
   }, [])
+
+  // ── Cloud sync: load on mount ──
+  useEffect(() => {
+    ;(async () => {
+      try {
+        const r = await fetch('/api/sync', { cache: 'no-store' })
+        if (!r.ok) return
+        const remote: SyncData | null = await r.json()
+        if (!remote) return
+
+        // Merge favorites (union)
+        if (remote.favorites?.length) {
+          const local: string[] = JSON.parse(localStorage.getItem('podcast-favorites') || '[]')
+          const merged = [...new Set([...local, ...remote.favorites])]
+          localStorage.setItem('podcast-favorites', JSON.stringify(merged))
+          const s = new Set<string>(merged)
+          setFavorites(s)
+          favoritesRef.current = s
+        }
+
+        // Merge progress (take whichever is further)
+        if (remote.progress) {
+          const updates: Record<string, number> = {}
+          for (const [id, rd] of Object.entries(remote.progress)) {
+            if (!rd?.dur) continue
+            const local = localStorage.getItem(`podcast-pos-${id}`)
+            const ld = local ? JSON.parse(local) : { pos: 0 }
+            if ((rd.pos || 0) > (ld.pos || 0)) {
+              localStorage.setItem(`podcast-pos-${id}`, JSON.stringify(rd))
+              updates[id] = rd.pos / rd.dur
+            }
+          }
+          if (Object.keys(updates).length) setVideoProgress(prev => ({ ...prev, ...updates }))
+        }
+      } catch {}
+    })()
+  }, [])
+
+  // ── Cloud sync: push (debounced 3s) ──
+  function scheduleSync() {
+    if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current)
+    setSyncing(true)
+    syncTimeoutRef.current = setTimeout(async () => {
+      const progress: Record<string, { pos: number; dur: number }> = {}
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i)
+        if (k?.startsWith('podcast-pos-')) {
+          try { progress[k.replace('podcast-pos-', '')] = JSON.parse(localStorage.getItem(k)!) } catch {}
+        }
+      }
+      try {
+        await fetch('/api/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ favorites: [...favoritesRef.current], progress }),
+        })
+      } catch {}
+      setSyncing(false)
+    }, 3000)
+  }
 
   // Persist translation toggle
   useEffect(() => {
@@ -113,8 +192,11 @@ export default function Home() {
 
   const saveProgress = useCallback((id: string, cur: number, dur: number) => {
     if (cur < 5 || dur <= 0) return
-    localStorage.setItem(`podcast-pos-${id}`, JSON.stringify({ pos: Math.floor(cur), dur: Math.floor(dur) }))
-    setVideoProgress(prev => ({ ...prev, [id]: cur / dur }))
+    const data = { pos: Math.floor(cur), dur: Math.floor(dur) }
+    localStorage.setItem(`podcast-pos-${id}`, JSON.stringify(data))
+    const ratio = cur / dur
+    setVideoProgress(prev => ({ ...prev, [id]: ratio }))
+    scheduleSync()
   }, [])
 
   useEffect(() => {
@@ -135,7 +217,6 @@ export default function Home() {
         const cur = a.currentTime || 0
         const dur = a.duration || 0
         const paused = a.paused
-        // Only re-render if values actually changed
         setPlaying(prev => prev === !paused ? prev : !paused)
         setElapsed(cur)
         setDuration(dur)
@@ -266,6 +347,8 @@ export default function Home() {
       const next = new Set(prev)
       next.has(videoId) ? next.delete(videoId) : next.add(videoId)
       localStorage.setItem('podcast-favorites', JSON.stringify([...next]))
+      favoritesRef.current = next
+      scheduleSync()
       return next
     })
   }
@@ -277,7 +360,7 @@ export default function Home() {
     setTranscriptSegs([]); setTranscriptVideoId(video.id)
     try {
       const res = await fetch(`/data/transcripts/${video.id}.json`)
-      if (!res.ok) throw new Error('not_found')
+      if (!res.ok) throw new Error()
       const data = await res.json()
       data.segments?.length ? setTranscriptSegs(data.segments) : setTranscriptError('暂无字幕')
     } catch { setTranscriptError('暂无字幕') }
@@ -295,7 +378,6 @@ export default function Home() {
 
   const filled = `${Math.round(progress * 100)}%`
 
-  // Shared sheet overlay style
   const overlayAnim = (name: SheetName) => ({
     animation: `${closingSheet === name ? 'fade-out' : 'fade-in'} 0.28s ease forwards`,
     background: 'rgba(0,0,0,0.48)',
@@ -307,20 +389,28 @@ export default function Home() {
     background: 'var(--bg-card)',
   })
 
+  const filteredVideos = videos.filter(v => {
+    const p = videoProgress[v.id] ?? 0
+    if (filter === 'all') return true
+    if (filter === 'fav') return favorites.has(v.id)
+    if (filter === 'inprogress') return p > 0 && p < DONE_THRESHOLD
+    if (filter === 'done') return p >= DONE_THRESHOLD
+    return true
+  })
+
   return (
     <div className="flex flex-col h-dvh overflow-hidden" style={{ background: 'var(--bg)' }}>
       <audio ref={audioElRef} playsInline preload="auto"
         style={{ position: 'absolute', width: 0, height: 0, opacity: 0, pointerEvents: 'none' }} />
 
-      {/* ── Main scrollable list ── */}
+      {/* ── Main list ── */}
       <div className="flex-1 overflow-y-auto">
 
         {/* Channel header */}
         <div className="px-5 pt-12 pb-5">
           <button
             onClick={() => channels.length > 1 && setShowChannelPicker(true)}
-            className="block mb-5 active:scale-95 transition-transform duration-150"
-          >
+            className="block mb-5 active:scale-95 transition-transform duration-150">
             <div className="w-24 h-24 rounded-[22px] shadow-lg flex items-center justify-center"
               style={{ background: `linear-gradient(145deg, ${ac} 0%, #5e5ce6 100%)` }}>
               <span className="text-5xl font-bold text-white select-none">{activeChannel.initial}</span>
@@ -332,12 +422,19 @@ export default function Home() {
           <p className="text-sm font-medium mt-0.5" style={{ color: ac }}>{activeChannel.description}</p>
           <div className="flex items-center gap-3 mt-2">
             <p className="text-xs" style={{ color: 'var(--text-tertiary)' }}>{videos.length} 个节目</p>
+            {/* Sync indicator */}
+            {syncing && (
+              <span className="text-[11px] flex items-center gap-1" style={{ color: 'var(--text-tertiary)' }}>
+                <span className="w-1.5 h-1.5 rounded-full inline-block" style={{
+                  background: ac, animation: 'eq-bounce 0.8s ease-in-out infinite',
+                }} />
+                同步中
+              </span>
+            )}
             {channels.length > 1 && (
-              <button
-                onClick={() => setShowChannelPicker(true)}
-                className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border"
-                style={{ borderColor: 'var(--separator)', color: 'var(--text-secondary)' }}
-              >
+              <button onClick={() => setShowChannelPicker(true)}
+                className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border ml-auto"
+                style={{ borderColor: 'var(--separator)', color: 'var(--text-secondary)' }}>
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>
                 </svg>
@@ -349,37 +446,45 @@ export default function Home() {
 
         <div className="h-px mx-5" style={{ background: 'var(--separator)' }} />
 
-        {/* Filter */}
+        {/* Filter tabs */}
         <div className="px-5 pt-4 pb-3 flex items-center justify-between">
-          <span className="text-[11px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-tertiary)' }}>节目列表</span>
-          <div className="flex gap-1">
-            {(['all', 'inprogress', 'done'] as const).map(f => (
-              <button key={f} onClick={() => setFilter(f)}
-                className="text-xs px-2.5 py-1 rounded-full transition-colors"
+          <span className="text-[11px] font-semibold uppercase tracking-widest flex-shrink-0"
+            style={{ color: 'var(--text-tertiary)' }}>
+            {filter === 'fav' ? '收藏列表' : filter === 'done' ? '已听完' : filter === 'inprogress' ? '进行中' : '节目列表'}
+          </span>
+          <div className="flex gap-1 ml-3 overflow-x-auto">
+            {FILTERS.map(f => (
+              <button key={f.key} onClick={() => setFilter(f.key)}
+                className="text-xs px-3 py-1 rounded-full whitespace-nowrap transition-colors flex-shrink-0"
                 style={{
-                  background: filter === f ? ac : 'var(--bg-raised)',
-                  color: filter === f ? 'white' : 'var(--text-secondary)',
+                  background: filter === f.key ? ac : 'var(--bg-raised)',
+                  color: filter === f.key ? 'white' : 'var(--text-secondary)',
+                  fontWeight: filter === f.key ? 600 : 400,
                 }}>
-                {f === 'all' ? '全部' : f === 'inprogress' ? '进行中' : '已听完'}
+                {f.key === 'fav' ? '♥ 收藏' : f.label}
               </button>
             ))}
           </div>
         </div>
 
-        {videos.length === 0 && (
-          <p className="px-5 py-12 text-center text-sm" style={{ color: 'var(--text-tertiary)' }}>加载中...</p>
+        {filteredVideos.length === 0 && (
+          <div className="px-5 py-12 text-center">
+            <p className="text-sm" style={{ color: 'var(--text-tertiary)' }}>
+              {videos.length === 0 ? '加载中…' :
+               filter === 'fav' ? '还没有收藏的节目' :
+               filter === 'inprogress' ? '没有进行中的节目' :
+               filter === 'done' ? '还没有听完的节目' : '暂无节目'}
+            </p>
+          </div>
         )}
 
         {/* Video list */}
         <div className="pb-1">
-          {videos.filter(v => {
-            if (filter === 'all') return true
-            const p = videoProgress[v.id] ?? 0
-            return filter === 'inprogress' ? p > 0 && p < 0.97 : p >= 0.97
-          }).map(video => {
+          {filteredVideos.map(video => {
             const isActive = current?.id === video.id
             const isFav = favorites.has(video.id)
             const prog = videoProgress[video.id] ?? 0
+            const isDone = prog >= DONE_THRESHOLD
             return (
               <div key={video.id} className="relative">
                 {isActive && (
@@ -396,10 +501,11 @@ export default function Home() {
                     <img src={video.thumbnail} alt="" loading="lazy"
                       className="w-[54px] h-[54px] rounded-xl object-cover"
                       style={{ background: 'var(--bg-raised)' }} />
-                    {!isActive && prog >= 0.97 && (
-                      <div className="absolute -top-1 -right-1 w-4 h-4 rounded-full flex items-center justify-center shadow-sm"
+                    {/* Completed badge */}
+                    {!isActive && isDone && (
+                      <div className="absolute -top-1 -right-1 w-[18px] h-[18px] rounded-full flex items-center justify-center shadow-sm"
                         style={{ background: ac }}>
-                        <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3.5">
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3">
                           <polyline points="20 6 9 17 4 12"/>
                         </svg>
                       </div>
@@ -436,22 +542,30 @@ export default function Home() {
                       }}>
                       {video.title}
                     </p>
-                    <p className="text-[12px] mt-1" style={{ color: 'var(--text-tertiary)' }}>
-                      {formatDate(video.published)}
-                    </p>
-                    {!isActive && prog > 0 && prog < 0.97 && (
+                    <div className="flex items-center gap-2 mt-1">
+                      <p className="text-[12px]" style={{ color: 'var(--text-tertiary)' }}>
+                        {formatDate(video.published)}
+                      </p>
+                      {isDone && !isActive && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium"
+                          style={{ background: `${ac}20`, color: ac }}>
+                          已听完
+                        </span>
+                      )}
+                    </div>
+                    {!isActive && prog > 0 && prog < DONE_THRESHOLD && (
                       <div className="mt-2 h-[2px] rounded-full overflow-hidden" style={{ background: 'var(--separator)' }}>
-                        <div className="h-full rounded-full" style={{ width: `${Math.round(prog * 100)}%`, background: ac, opacity: 0.5 }} />
+                        <div className="h-full rounded-full"
+                          style={{ width: `${Math.round(prog * 100)}%`, background: ac, opacity: 0.5 }} />
                       </div>
                     )}
                   </div>
                 </div>
 
-                {/* Favorite */}
+                {/* Favorite button */}
                 <button
                   onClick={(e) => toggleFavorite(video.id, e)}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 p-2 active:scale-90 transition-transform"
-                >
+                  className="absolute right-4 top-1/2 -translate-y-1/2 p-2 active:scale-90 transition-transform">
                   <svg width="16" height="16" viewBox="0 0 24 24"
                     fill={isFav ? ac : 'none'}
                     stroke={isFav ? ac : 'var(--text-tertiary)'}
@@ -536,7 +650,6 @@ export default function Home() {
             WebkitBackdropFilter: 'blur(24px)',
             borderTop: '1px solid var(--separator)',
           }}>
-          {/* Seek bar */}
           <div className="relative h-[2px]" style={{ background: 'var(--separator)' }}>
             <div className="absolute inset-y-0 left-0" style={{ width: filled, background: ac }} />
             <input type="range" min="0" max="1" step="0.001" value={progress}
@@ -548,7 +661,6 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-3 px-4 pt-3 pb-2.5">
-            {/* Tap to open transcript */}
             <button onClick={() => current && openTranscript(current)}
               className="flex items-center gap-3 flex-1 min-w-0 text-left active:opacity-70">
               <img src={current.thumbnail} alt=""
@@ -564,15 +676,11 @@ export default function Home() {
                   <span>·</span>
                   <span>{formatTime(duration)}</span>
                   {timeLeft !== null && (
-                    <span className="ml-1 font-medium" style={{ color: ac }}>
-                      {formatTime(timeLeft)} 后停
-                    </span>
+                    <span className="ml-1 font-medium" style={{ color: ac }}>{formatTime(timeLeft)} 后停</span>
                   )}
                 </p>
               </div>
             </button>
-
-            {/* Controls */}
             <div className="flex items-center gap-2.5 flex-shrink-0">
               <button onClick={() => skip(-15)} className="active:opacity-50 p-1" style={{ color: 'var(--text-secondary)' }}>
                 <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor">
@@ -609,14 +717,13 @@ export default function Home() {
         </div>
       )}
 
-      {/* ── Transcript full-screen page ── */}
+      {/* ── Transcript page ── */}
       {showTranscript && current && (
         <div className="fixed inset-0 z-50 flex flex-col"
           style={{
             animation: `${closingSheet === 'transcript' ? 'page-down' : 'page-up'} 0.35s cubic-bezier(0.32,0.72,0,1) forwards`,
             background: 'var(--bg)',
           }}>
-          {/* Header */}
           <div className="flex items-center justify-between px-5 pt-14 pb-3 flex-shrink-0"
             style={{ borderBottom: '1px solid var(--separator)' }}>
             <button
@@ -631,7 +738,7 @@ export default function Home() {
             <p className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>字幕</p>
             <button
               onClick={() => setShowTranslation(v => !v)}
-              className="text-[12px] px-3 py-1.5 rounded-full border transition-colors"
+              className="text-[12px] px-3 py-1.5 rounded-full border"
               style={{
                 borderColor: showTranslation ? ac : 'var(--separator)',
                 background: showTranslation ? `${ac}20` : 'transparent',
@@ -642,15 +749,14 @@ export default function Home() {
             </button>
           </div>
 
-          {/* Now playing bar */}
           <div className="px-5 py-2.5 flex items-center gap-3 flex-shrink-0"
             style={{ background: 'var(--bg-raised)', borderBottom: '1px solid var(--separator)' }}>
             <img src={current.thumbnail} alt="" className="w-8 h-8 rounded-lg object-cover flex-shrink-0" />
             <p className="text-[12px] truncate flex-1 font-medium" style={{ color: 'var(--text-secondary)' }}>{current.title}</p>
-            <button onClick={cycleSpeed} className="flex-shrink-0 active:opacity-60">
+            <button onClick={cycleSpeed} className="active:opacity-60">
               <span className="text-[12px] font-bold" style={{ color: ac }}>{playbackRate}x</span>
             </button>
-            <button onClick={togglePlay} className="flex-shrink-0 active:scale-90 transition-transform">
+            <button onClick={togglePlay} className="active:scale-90 transition-transform">
               <div className="w-7 h-7 rounded-full flex items-center justify-center" style={{ background: ac }}>
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="white">
                   {playing
@@ -661,16 +767,11 @@ export default function Home() {
             </button>
           </div>
 
-          {/* Subtitles */}
           <div ref={transcriptListRef} className="flex-1 overflow-y-auto py-3"
             onTouchStart={() => { userScrollingRef.current = true }}
             onTouchEnd={() => { setTimeout(() => { userScrollingRef.current = false }, 3000) }}>
-            {transcriptLoading && (
-              <p className="text-center py-20 text-sm" style={{ color: 'var(--text-tertiary)' }}>加载字幕中…</p>
-            )}
-            {transcriptError && (
-              <p className="text-center py-20 text-sm" style={{ color: 'var(--text-tertiary)' }}>{transcriptError}</p>
-            )}
+            {transcriptLoading && <p className="text-center py-20 text-sm" style={{ color: 'var(--text-tertiary)' }}>加载字幕中…</p>}
+            {transcriptError && <p className="text-center py-20 text-sm" style={{ color: 'var(--text-tertiary)' }}>{transcriptError}</p>}
             {transcriptSegs.map((seg, i) => {
               const isActive = i === currentSegIdx
               return (
@@ -682,18 +783,14 @@ export default function Home() {
                     if (a.paused) { a.play().catch(() => {}); setPlaying(true) }
                   }}
                   className="w-full text-left px-5 py-2.5 active:opacity-60">
-                  {isActive && (
-                    <div className="w-5 h-[2px] rounded-full mb-2" style={{ background: ac }} />
-                  )}
+                  {isActive && <div className="w-5 h-[2px] rounded-full mb-2" style={{ background: ac }} />}
                   <p style={{
                     color: isActive ? 'var(--text-primary)' : 'var(--text-tertiary)',
                     fontWeight: isActive ? 600 : 400,
                     fontSize: isActive ? 17 : 15,
                     lineHeight: 1.6,
-                    transition: 'color 0.15s, font-size 0.15s',
-                  }}>
-                    {seg.ko}
-                  </p>
+                    transition: 'color 0.15s',
+                  }}>{seg.ko}</p>
                   {showTranslation && seg.zh && seg.zh !== seg.ko && (
                     <p style={{
                       color: isActive ? ac : 'var(--text-tertiary)',
@@ -703,9 +800,7 @@ export default function Home() {
                       marginTop: 4,
                       opacity: isActive ? 1 : 0.65,
                       transition: 'color 0.15s',
-                    }}>
-                      {seg.zh}
-                    </p>
+                    }}>{seg.zh}</p>
                   )}
                 </button>
               )
@@ -713,7 +808,6 @@ export default function Home() {
             <div className="h-24" />
           </div>
 
-          {/* Seek + controls */}
           <div className="flex-shrink-0 px-5 pt-3 pb-3"
             style={{
               background: 'var(--bg-glass)',
@@ -721,11 +815,8 @@ export default function Home() {
               WebkitBackdropFilter: 'blur(24px)',
               borderTop: '1px solid var(--separator)',
             }}>
-            {/* Progress */}
             <div className="flex items-center gap-3 mb-3">
-              <span className="text-[11px] tabular-nums w-8 text-right" style={{ color: 'var(--text-tertiary)' }}>
-                {formatTime(elapsed)}
-              </span>
+              <span className="text-[11px] tabular-nums w-8 text-right" style={{ color: 'var(--text-tertiary)' }}>{formatTime(elapsed)}</span>
               <div className="flex-1 relative h-[3px] rounded-full" style={{ background: 'var(--separator)' }}>
                 <div className="absolute inset-y-0 left-0 rounded-full" style={{ width: filled, background: ac }} />
                 <input type="range" min="0" max="1" step="0.001" value={progress}
@@ -735,11 +826,8 @@ export default function Home() {
                   className="absolute w-full opacity-0 cursor-pointer"
                   style={{ height: 20, top: -9 }} />
               </div>
-              <span className="text-[11px] tabular-nums w-8" style={{ color: 'var(--text-tertiary)' }}>
-                {formatTime(duration)}
-              </span>
+              <span className="text-[11px] tabular-nums w-8" style={{ color: 'var(--text-tertiary)' }}>{formatTime(duration)}</span>
             </div>
-            {/* Skip + play */}
             <div className="flex items-center justify-center gap-12">
               <button onClick={() => skip(-15)} className="active:opacity-50" style={{ color: 'var(--text-secondary)' }}>
                 <svg width="30" height="30" viewBox="0 0 24 24" fill="currentColor">
@@ -748,8 +836,7 @@ export default function Home() {
                 </svg>
               </button>
               <button onClick={togglePlay} className="active:scale-90 transition-transform duration-100">
-                <div className="w-[54px] h-[54px] rounded-full flex items-center justify-center shadow-md"
-                  style={{ background: ac }}>
+                <div className="w-[54px] h-[54px] rounded-full flex items-center justify-center shadow-md" style={{ background: ac }}>
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="white">
                     {playing
                       ? <><rect x="6" y="4" width="4" height="16" rx="1.5"/><rect x="14" y="4" width="4" height="16" rx="1.5"/></>
