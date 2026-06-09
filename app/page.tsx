@@ -642,6 +642,7 @@ export default function Home() {
             const isDone = prog >= DONE_THRESHOLD
             const det = videoDetails[video.id]
             const totalDur = video.duration ?? det?.dur
+            const displayProg = isActive ? progress : prog
             const pct = prog > 0 ? Math.round(prog * 100) : 0
             return (
               <div key={video.id} className="relative">
@@ -704,11 +705,13 @@ export default function Home() {
                       <p className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
                         {formatDate(video.published)}
                       </p>
-                      {totalDur !== undefined && !isActive && (
+                      {totalDur !== undefined && (
                         <p className="text-[11px] tabular-nums" style={{ color: 'var(--text-tertiary)' }}>
-                          {det && !isDone
-                            ? <>{formatTime(det.pos)}<span style={{ opacity: 0.5 }}> / {formatTime(totalDur)}</span></>
-                            : formatTime(totalDur)
+                          {isActive
+                            ? <>{formatTime(elapsed)}<span style={{ opacity: 0.5 }}> / {formatTime(duration || totalDur)}</span></>
+                            : det && !isDone
+                              ? <>{formatTime(det.pos)}<span style={{ opacity: 0.5 }}> / {formatTime(totalDur)}</span></>
+                              : formatTime(totalDur)
                           }
                         </p>
                       )}
@@ -728,10 +731,10 @@ export default function Home() {
                         </button>
                       )}
                     </div>
-                    {!isActive && prog > 0 && prog < DONE_THRESHOLD && (
+                    {displayProg > 0 && displayProg < DONE_THRESHOLD && (
                       <div className="mt-1.5 h-[2px] rounded-full overflow-hidden" style={{ background: 'var(--separator)' }}>
                         <div className="h-full rounded-full"
-                          style={{ width: `${Math.round(prog * 100)}%`, background: ac, opacity: 0.6 }} />
+                          style={{ width: `${Math.round(displayProg * 100)}%`, background: ac, opacity: isActive ? 1 : 0.6 }} />
                       </div>
                     )}
                   </div>
