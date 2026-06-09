@@ -23,6 +23,17 @@ jobs:
 
           API_KEY = os.environ["YOUTUBE_API_KEY"]
 
+          def clean_title(title):
+              t = title
+              t = re.sub(r'【[^】]*[a-zA-Z]{2,}[^】]*】\s*', '', t)
+              t = re.sub(r'\([^)]*\)', lambda m: m.group(0) if re.search(r'[가-힣]', m.group(0)) else '', t)
+              t = re.sub(r'^Didi의\s+한국문화\s+Podcast\s*', '', t, flags=re.IGNORECASE)
+              t = t.split('|')[0]
+              t = t.split('✶')[0]
+              t = re.sub(r'\s{2,}', ' ', t).strip()
+              t = re.sub(r'[\s·\-–—]+$', '', t).strip()
+              return t or title
+
           def fetch_playlist(pl_id):
               videos = []
               page_token = None
@@ -37,7 +48,7 @@ jobs:
                       s = item["snippet"]
                       vid = s["resourceId"]["videoId"]
                       thumb = s["thumbnails"].get("medium", s["thumbnails"].get("default", {})).get("url", f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg")
-                      videos.append({"id": vid, "title": s["title"], "published": s["publishedAt"][:10], "thumbnail": thumb})
+                      videos.append({"id": vid, "title": clean_title(s["title"]), "published": s["publishedAt"][:10], "thumbnail": thumb})
                   page_token = data.get("nextPageToken")
                   if not page_token:
                       break
