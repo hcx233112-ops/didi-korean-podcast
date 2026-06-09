@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import channelsData from '@/data/channels.json'
 
 interface Channel { id: string; name: string; description: string; initial: string; color: string }
@@ -62,7 +62,12 @@ const channels: Channel[] = channelsData
 
 function formatTime(s: number) {
   if (!s || isNaN(s)) return '0:00'
-  return `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`
+  const h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const sec = Math.floor(s % 60)
+  return h > 0
+    ? `${h}:${m.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`
+    : `${m}:${sec.toString().padStart(2, '0')}`
 }
 function formatDate(s: string) {
   return new Date(s).toLocaleDateString('zh-CN', { year: 'numeric', month: 'short', day: 'numeric' })
@@ -90,7 +95,6 @@ export default function Home() {
   const [showTimer, setShowTimer] = useState(false)
   const [timerMinutes, setTimerMinutes] = useState(0)
   const [timeLeft, setTimeLeft] = useState<number | null>(null)
-  const [seeking, setSeeking] = useState(false)
   const [showTranscript, setShowTranscript] = useState(false)
   const [showTranslation, setShowTranslation] = useState(false)
   const [transcriptSegs, setTranscriptSegs] = useState<TranscriptSegment[]>([])
@@ -211,17 +215,22 @@ export default function Home() {
 
         // Merge progress (take whichever is further)
         if (remote.progress) {
-          const updates: Record<string, number> = {}
+          const progUpdates: Record<string, number> = {}
+          const detailUpdates: Record<string, { pos: number; dur: number }> = {}
           for (const [id, rd] of Object.entries(remote.progress)) {
             if (!rd?.dur) continue
             const local = localStorage.getItem(`podcast-pos-${id}`)
             const ld = local ? JSON.parse(local) : { pos: 0 }
             if ((rd.pos || 0) > (ld.pos || 0)) {
               localStorage.setItem(`podcast-pos-${id}`, JSON.stringify(rd))
-              updates[id] = rd.pos / rd.dur
+              progUpdates[id] = rd.pos / rd.dur
+              detailUpdates[id] = rd
             }
           }
-          if (Object.keys(updates).length) setVideoProgress(prev => ({ ...prev, ...updates }))
+          if (Object.keys(progUpdates).length) {
+            setVideoProgress(prev => ({ ...prev, ...progUpdates }))
+            setVideoDetails(prev => ({ ...prev, ...detailUpdates }))
+          }
         }
       } catch {}
     })()
@@ -251,7 +260,7 @@ export default function Home() {
     syncTimeoutRef.current = setTimeout(pushSync, 500)
   }
 
-  // 每 10 秒同步一次进度（播放期间）
+  // 每 5 秒同步一次进度（播放期间）
   useEffect(() => {
     const id = setInterval(() => {
       if (playerRef.current && !playerRef.current.paused) pushSync()
@@ -396,7 +405,7 @@ export default function Home() {
 
   function onSeekEnd() {
     if (playerRef.current) playerRef.current.currentTime = progress * duration
-    seekingRef.current = false; setSeeking(false)
+    seekingRef.current = false
   }
 
   function openTimerSheet() {
@@ -434,6 +443,7 @@ export default function Home() {
     e.stopPropagation()
     localStorage.removeItem(`podcast-pos-${videoId}`)
     setVideoProgress(prev => { const n = { ...prev }; delete n[videoId]; return n })
+    setVideoDetails(prev => { const n = { ...prev }; delete n[videoId]; return n })
     scheduleSync()
   }
 
@@ -463,9 +473,9 @@ export default function Home() {
     finally { setTranscriptLoading(false) }
   }
 
-  const currentSegIdx = transcriptSegs.findIndex(
+  const currentSegIdx = useMemo(() => transcriptSegs.findIndex(
     (s, i) => elapsed >= s.start && (i === transcriptSegs.length - 1 || elapsed < transcriptSegs[i + 1].start)
-  )
+  ), [transcriptSegs, elapsed])
 
   useEffect(() => {
     if (!showTranscript || currentSegIdx < 0 || userScrollingRef.current) return
@@ -779,8 +789,8 @@ export default function Home() {
           <div className="relative h-[2px]" style={{ background: 'var(--separator)' }}>
             <div className="absolute inset-y-0 left-0" style={{ width: filled, background: ac }} />
             <input type="range" min="0" max="1" step="0.001" value={progress}
-              onMouseDown={() => { seekingRef.current = true; setSeeking(true) }}
-              onTouchStart={() => { seekingRef.current = true; setSeeking(true) }}
+              onMouseDown={() => { seekingRef.current = true; seekingRef.current = true }}
+              onTouchStart={() => { seekingRef.current = true; seekingRef.current = true }}
               onChange={onSeekChange} onMouseUp={onSeekEnd} onTouchEnd={onSeekEnd}
               className="absolute w-full opacity-0 cursor-pointer"
               style={{ height: 16, top: -7 }} />
@@ -832,7 +842,7 @@ export default function Home() {
               </button>
               <button onClick={openTimerSheet} className="active:opacity-50 p-1">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
-                  stroke={timerMinutes > 0 ? ac : 'var(--text-tertiary)'} strokeWidth="2">
+                  stroke={timerMinutes > 0 || stopAfterCurrent ? ac : 'var(--text-tertiary)'} strokeWidth="2">
                   <circle cx="12" cy="13" r="8"/>
                   <path d="M12 9v4l3 3M9 3h6M12 3v2"/>
                 </svg>
@@ -946,8 +956,8 @@ export default function Home() {
               <div className="flex-1 relative h-[3px] rounded-full" style={{ background: 'var(--separator)' }}>
                 <div className="absolute inset-y-0 left-0 rounded-full" style={{ width: filled, background: ac }} />
                 <input type="range" min="0" max="1" step="0.001" value={progress}
-                  onMouseDown={() => { seekingRef.current = true; setSeeking(true) }}
-                  onTouchStart={() => { seekingRef.current = true; setSeeking(true) }}
+                  onMouseDown={() => { seekingRef.current = true; seekingRef.current = true }}
+                  onTouchStart={() => { seekingRef.current = true; seekingRef.current = true }}
                   onChange={onSeekChange} onMouseUp={onSeekEnd} onTouchEnd={onSeekEnd}
                   className="absolute w-full opacity-0 cursor-pointer"
                   style={{ height: 20, top: -9 }} />
