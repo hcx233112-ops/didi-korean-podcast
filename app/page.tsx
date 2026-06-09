@@ -172,8 +172,9 @@ export default function Home() {
 
   function ensureAudio(): HTMLAudioElement {
     if (playerRef.current) return playerRef.current
-    const a = audioElRef.current!
-    a.preload = 'metadata'
+    // fallback to new Audio() if ref not ready (e.g., SSR hydration edge case)
+    const a = audioElRef.current ?? new Audio()
+    a.preload = 'auto'
     a.addEventListener('play', () => setPlaying(true))
     a.addEventListener('pause', () => setPlaying(false))
     a.addEventListener('ended', () => {
