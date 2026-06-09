@@ -62,12 +62,7 @@ const channels: Channel[] = channelsData
 
 function formatTime(s: number) {
   if (!s || isNaN(s)) return '0:00'
-  const h = Math.floor(s / 3600)
-  const m = Math.floor((s % 3600) / 60)
-  const sec = Math.floor(s % 60)
-  return h > 0
-    ? `${h}:${m.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`
-    : `${m}:${sec.toString().padStart(2, '0')}`
+  return `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`
 }
 function formatDate(s: string) {
   return new Date(s).toLocaleDateString('zh-CN', { year: 'numeric', month: 'short', day: 'numeric' })
@@ -295,6 +290,7 @@ export default function Home() {
   const startPolling = useCallback(() => {
     if (pollRef.current) clearInterval(pollRef.current)
     pollRef.current = setInterval(() => {
+      if (document.visibilityState === 'hidden') return
       const a = playerRef.current
       if (!a || seekingRef.current) return
       try {
@@ -316,7 +312,7 @@ export default function Home() {
           saveProgress(currentIdRef.current, cur, dur)
         }
       } catch {}
-    }, 500)
+    }, 1000)
   }, [saveProgress])
 
   function ensureAudio(): HTMLAudioElement {
@@ -495,14 +491,14 @@ export default function Home() {
     background: 'var(--bg-card)',
   })
 
-  const filteredVideos = videos.filter(v => {
+  const filteredVideos = useMemo(() => videos.filter(v => {
     const p = videoProgress[v.id] ?? 0
     if (filter === 'all') return true
     if (filter === 'fav') return favorites.has(v.id)
     if (filter === 'inprogress') return p > 0 && p < DONE_THRESHOLD
     if (filter === 'done') return p >= DONE_THRESHOLD
     return true
-  })
+  }), [videos, videoProgress, filter, favorites])
 
   playFnRef.current = play
 
