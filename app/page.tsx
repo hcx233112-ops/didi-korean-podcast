@@ -14,13 +14,47 @@ interface SyncData {
 
 const DONE_THRESHOLD = 0.9
 
-const TIMER_OPTIONS = [
-  { label: '关闭', minutes: 0 },
-  { label: '15分钟', minutes: 15 },
-  { label: '30分钟', minutes: 30 },
-  { label: '60分钟', minutes: 60 },
-  { label: '90分钟', minutes: 90 },
-]
+const HOUR_VALUES = [0, 1, 2, 3, 4, 5]
+const MIN_VALUES = Array.from({ length: 60 }, (_, i) => i)
+
+function ScrollPicker({ values, selected, onChange, label }: {
+  values: number[]; selected: number; onChange: (v: number) => void; label: string
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+  const H = 44
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const idx = values.indexOf(selected)
+    el.scrollTop = (idx < 0 ? 0 : idx) * H
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  function handleScroll() {
+    const el = ref.current
+    if (!el) return
+    const idx = Math.round(el.scrollTop / H)
+    onChange(values[Math.max(0, Math.min(idx, values.length - 1))])
+  }
+  return (
+    <div className="relative flex-1 select-none">
+      <div className="absolute inset-x-1 rounded-xl pointer-events-none z-10"
+        style={{ top: H * 2, height: H, background: 'var(--bg-raised)' }} />
+      <div ref={ref} onScroll={handleScroll}
+        className="scroll-picker overflow-y-scroll"
+        style={{ height: H * 5, scrollSnapType: 'y mandatory' }}>
+        <div style={{ height: H * 2 }} />
+        {values.map(v => (
+          <div key={v} className="flex items-center justify-center text-[22px] font-medium"
+            style={{ height: H, scrollSnapAlign: 'center',
+              color: v === selected ? 'var(--text-primary)' : 'var(--text-tertiary)' }}>
+            {String(v).padStart(2, '0')}
+          </div>
+        ))}
+        <div style={{ height: H * 2 }} />
+      </div>
+      <p className="text-[11px] text-center pt-1" style={{ color: 'var(--text-tertiary)' }}>{label}</p>
+    </div>
+  )
+}
 const SPEED_OPTIONS = [0.75, 1, 1.25, 1.5, 2]
 const RAW_AUDIO_BASE = process.env.NEXT_PUBLIC_AUDIO_BASE || '/audio/'
 const AUDIO_BASE = RAW_AUDIO_BASE.endsWith('/') ? RAW_AUDIO_BASE : RAW_AUDIO_BASE + '/'
@@ -67,8 +101,12 @@ export default function Home() {
   const [favorites, setFavorites] = useState<Set<string>>(new Set())
   const [videoProgress, setVideoProgress] = useState<Record<string, number>>({})
   const [filter, setFilter] = useState<FilterType>('all')
+  const [videoDetails, setVideoDetails] = useState<Record<string, { pos: number; dur: number }>>({})
   const [closingSheet, setClosingSheet] = useState<SheetName | null>(null)
-  const [syncing, setSyncing] = useState(false)
+  const [stopAfterCurrent, setStopAfterCurrent] = useState(false)
+  const [channelAvatars, setChannelAvatars] = useState<Record<string, string>>({})
+  const [pickerHours, setPickerHours] = useState(0)
+  const [pickerMins, setPickerMins] = useState(0)
 
   const playerRef = useRef<HTMLAudioElement | null>(null)
   const audioElRef = useRef<HTMLAudioElement | null>(null)
@@ -82,13 +120,34 @@ export default function Home() {
   const currentIdRef = useRef<string | null>(null)
   const lastProgressSaveRef = useRef(0)
   const favoritesRef = useRef<Set<string>>(new Set())
+  const stopAfterCurrentRef = useRef(false)
+  const videosRef = useRef<Video[]>([])
+  const playFnRef = useRef<(v: Video) => void>(() => {})
 
   const activeChannel = channels.find(c => c.id === activeChannelId) ?? channels[0]
   const videos = channelVideos[activeChannelId] ?? []
   const ac = activeChannel.color
 
-  // Keep favoritesRef current for async usage
+  // ── Load channel avatars (cached in localStorage) ──
+  useEffect(() => {
+    channels.forEach(ch => {
+      const cached = localStorage.getItem(`podcast-avatar-${ch.id}`)
+      if (cached) { setChannelAvatars(prev => ({ ...prev, [ch.id]: cached })); return }
+      fetch(`/api/avatar?channelId=${ch.id}`)
+        .then(r => r.json())
+        .then(({ url }: { url: string | null }) => {
+          if (!url) return
+          setChannelAvatars(prev => ({ ...prev, [ch.id]: url }))
+          localStorage.setItem(`podcast-avatar-${ch.id}`, url)
+        })
+        .catch(() => {})
+    })
+  }, [])
+
+  // Keep refs current for async/stale-closure usage
   useEffect(() => { favoritesRef.current = favorites }, [favorites])
+  useEffect(() => { stopAfterCurrentRef.current = stopAfterCurrent }, [stopAfterCurrent])
+  useEffect(() => { videosRef.current = channelVideos[activeChannelId] ?? [] }, [channelVideos, activeChannelId])
 
   function closeSheet(name: SheetName, setter: (v: boolean) => void) {
     setClosingSheet(name)
@@ -113,16 +172,22 @@ export default function Home() {
       if (trans !== null) setShowTranslation(trans === '1')
     } catch {}
     const prog: Record<string, number> = {}
+    const details: Record<string, { pos: number; dur: number }> = {}
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i)
       if (key?.startsWith('podcast-pos-')) {
         try {
           const d = JSON.parse(localStorage.getItem(key)!)
-          if (d.pos > 0 && d.dur > 0) prog[key.replace('podcast-pos-', '')] = d.pos / d.dur
+          if (d.pos > 0 && d.dur > 0) {
+            const id = key.replace('podcast-pos-', '')
+            prog[id] = d.pos / d.dur
+            details[id] = { pos: d.pos, dur: d.dur }
+          }
         } catch {}
       }
     }
     setVideoProgress(prog)
+    setVideoDetails(details)
   }, [])
 
   // ── Cloud sync: load on mount ──
@@ -162,28 +227,37 @@ export default function Home() {
     })()
   }, [])
 
-  // ── Cloud sync: push (debounced 3s) ──
+  // ── Cloud sync: push ──
+  async function pushSync() {
+    const progress: Record<string, { pos: number; dur: number }> = {}
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i)
+      if (k?.startsWith('podcast-pos-')) {
+        try { progress[k.replace('podcast-pos-', '')] = JSON.parse(localStorage.getItem(k)!) } catch {}
+      }
+    }
+    try {
+      await fetch('/api/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ favorites: [...favoritesRef.current], progress }),
+      })
+    } catch {}
+  }
+
+  // 收藏变化时立即同步（防抖 500ms）
   function scheduleSync() {
     if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current)
-    setSyncing(true)
-    syncTimeoutRef.current = setTimeout(async () => {
-      const progress: Record<string, { pos: number; dur: number }> = {}
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i)
-        if (k?.startsWith('podcast-pos-')) {
-          try { progress[k.replace('podcast-pos-', '')] = JSON.parse(localStorage.getItem(k)!) } catch {}
-        }
-      }
-      try {
-        await fetch('/api/sync', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ favorites: [...favoritesRef.current], progress }),
-        })
-      } catch {}
-      setSyncing(false)
-    }, 3000)
+    syncTimeoutRef.current = setTimeout(pushSync, 500)
   }
+
+  // 每 10 秒同步一次进度（播放期间）
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (playerRef.current && !playerRef.current.paused) pushSync()
+    }, 5_000)
+    return () => clearInterval(id)
+  }, [])
 
   // Persist translation toggle
   useEffect(() => {
@@ -194,15 +268,16 @@ export default function Home() {
     if (cur < 5 || dur <= 0) return
     const data = { pos: Math.floor(cur), dur: Math.floor(dur) }
     localStorage.setItem(`podcast-pos-${id}`, JSON.stringify(data))
-    const ratio = cur / dur
-    setVideoProgress(prev => ({ ...prev, [id]: ratio }))
-    scheduleSync()
+    setVideoProgress(prev => ({ ...prev, [id]: cur / dur }))
+    setVideoDetails(prev => ({ ...prev, [id]: data }))
   }, [])
 
   useEffect(() => {
     const onHide = () => {
-      if (!currentIdRef.current || !playerRef.current) return
-      try { saveProgress(currentIdRef.current, playerRef.current.currentTime || 0, playerRef.current.duration || 0) } catch {}
+      if (document.visibilityState !== 'hidden') return
+      if (currentIdRef.current && playerRef.current)
+        try { saveProgress(currentIdRef.current, playerRef.current.currentTime || 0, playerRef.current.duration || 0) } catch {}
+      pushSync()
     }
     document.addEventListener('visibilitychange', onHide)
     return () => document.removeEventListener('visibilitychange', onHide)
@@ -242,8 +317,16 @@ export default function Home() {
     a.addEventListener('play', () => setPlaying(true))
     a.addEventListener('pause', () => setPlaying(false))
     a.addEventListener('ended', () => {
-      setPlaying(false)
       if (currentIdRef.current && a.duration > 0) saveProgress(currentIdRef.current, a.duration, a.duration)
+      if (stopAfterCurrentRef.current) {
+        setStopAfterCurrent(false)
+        setPlaying(false)
+        return
+      }
+      const vids = videosRef.current
+      const idx = vids.findIndex(v => v.id === currentIdRef.current)
+      if (idx >= 0 && idx < vids.length - 1) playFnRef.current(vids[idx + 1])
+      else setPlaying(false)
     })
     a.addEventListener('loadedmetadata', () => {
       if (savedPosRef.current > 5 && a.duration && savedPosRef.current < a.duration - 2)
@@ -316,6 +399,12 @@ export default function Home() {
     seekingRef.current = false; setSeeking(false)
   }
 
+  function openTimerSheet() {
+    setPickerHours(Math.floor(timerMinutes / 60))
+    setPickerMins(timerMinutes % 60)
+    setShowTimer(true)
+  }
+
   function startTimer(minutes: number) {
     setTimerMinutes(minutes)
     closeSheet('timer', setShowTimer)
@@ -339,6 +428,13 @@ export default function Home() {
     const next = SPEED_OPTIONS[(SPEED_OPTIONS.indexOf(playbackRate) + 1) % SPEED_OPTIONS.length]
     setPlaybackRate(next)
     if (playerRef.current) playerRef.current.playbackRate = next
+  }
+
+  function resetProgress(videoId: string, e: React.MouseEvent) {
+    e.stopPropagation()
+    localStorage.removeItem(`podcast-pos-${videoId}`)
+    setVideoProgress(prev => { const n = { ...prev }; delete n[videoId]; return n })
+    scheduleSync()
   }
 
   function toggleFavorite(videoId: string, e: React.MouseEvent) {
@@ -398,6 +494,8 @@ export default function Home() {
     return true
   })
 
+  playFnRef.current = play
+
   return (
     <div className="flex flex-col h-dvh overflow-hidden" style={{ background: 'var(--bg)' }}>
       <audio ref={audioElRef} playsInline preload="auto"
@@ -406,56 +504,44 @@ export default function Home() {
       {/* ── Main list ── */}
       <div className="flex-1 overflow-y-auto">
 
-        {/* Channel header */}
-        <div className="px-5 pt-12 pb-5">
-          <button
-            onClick={() => channels.length > 1 && setShowChannelPicker(true)}
-            className="block mb-5 active:scale-95 transition-transform duration-150">
-            <div className="w-24 h-24 rounded-[22px] shadow-lg flex items-center justify-center"
-              style={{ background: `linear-gradient(145deg, ${ac} 0%, #5e5ce6 100%)` }}>
-              <span className="text-5xl font-bold text-white select-none">{activeChannel.initial}</span>
+        {/* Channel header — compact horizontal */}
+        <div className="px-4 pb-3" style={{ paddingTop: 'calc(env(safe-area-inset-top) + 10px)' }}>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => channels.length > 1 && setShowChannelPicker(true)}
+              className="flex-shrink-0 active:scale-95 transition-transform duration-150">
+              <div className="w-[52px] h-[52px] rounded-[14px] shadow overflow-hidden flex items-center justify-center"
+                style={{ background: `linear-gradient(145deg, ${ac} 0%, #5e5ce6 100%)` }}>
+                {channelAvatars[activeChannel.id]
+                  ? <img src={channelAvatars[activeChannel.id]} alt="" className="w-full h-full object-cover" />
+                  : <span className="text-2xl font-bold text-white select-none">{activeChannel.initial}</span>
+                }
+              </div>
+            </button>
+            <div className="flex-1 min-w-0">
+              <h1 className="text-[16px] font-bold leading-tight truncate" style={{ color: 'var(--text-primary)' }}>
+                {activeChannel.name}
+              </h1>
+              <p className="text-[12px] font-medium mt-0.5" style={{ color: ac }}>{activeChannel.description}</p>
+              <p className="text-[11px] mt-0.5" style={{ color: 'var(--text-tertiary)' }}>{videos.length} 个节目</p>
             </div>
-          </button>
-          <h1 className="text-[22px] font-bold leading-tight" style={{ color: 'var(--text-primary)' }}>
-            {activeChannel.name}
-          </h1>
-          <p className="text-sm font-medium mt-0.5" style={{ color: ac }}>{activeChannel.description}</p>
-          <div className="flex items-center gap-3 mt-2">
-            <p className="text-xs" style={{ color: 'var(--text-tertiary)' }}>{videos.length} 个节目</p>
-            {/* Sync indicator */}
-            {syncing && (
-              <span className="text-[11px] flex items-center gap-1" style={{ color: 'var(--text-tertiary)' }}>
-                <span className="w-1.5 h-1.5 rounded-full inline-block" style={{
-                  background: ac, animation: 'eq-bounce 0.8s ease-in-out infinite',
-                }} />
-                同步中
-              </span>
-            )}
             {channels.length > 1 && (
               <button onClick={() => setShowChannelPicker(true)}
-                className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border ml-auto"
-                style={{ borderColor: 'var(--separator)', color: 'var(--text-secondary)' }}>
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                className="flex-shrink-0 p-2 rounded-full active:opacity-50"
+                style={{ background: 'var(--bg-raised)' }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                  style={{ color: 'var(--text-secondary)' }}>
                   <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>
                 </svg>
-                切换博主
               </button>
             )}
           </div>
-        </div>
 
-        <div className="h-px mx-5" style={{ background: 'var(--separator)' }} />
-
-        {/* Filter tabs */}
-        <div className="px-5 pt-4 pb-3 flex items-center justify-between">
-          <span className="text-[11px] font-semibold uppercase tracking-widest flex-shrink-0"
-            style={{ color: 'var(--text-tertiary)' }}>
-            {filter === 'fav' ? '收藏列表' : filter === 'done' ? '已听完' : filter === 'inprogress' ? '进行中' : '节目列表'}
-          </span>
-          <div className="flex gap-1 ml-3 overflow-x-auto">
+          {/* Filter tabs */}
+          <div className="flex gap-1.5 mt-3 overflow-x-auto pb-0.5" style={{ scrollbarWidth: 'none' }}>
             {FILTERS.map(f => (
               <button key={f.key} onClick={() => setFilter(f.key)}
-                className="text-xs px-3 py-1 rounded-full whitespace-nowrap transition-colors flex-shrink-0"
+                className="text-[12px] px-3 py-1.5 rounded-full whitespace-nowrap transition-colors flex-shrink-0"
                 style={{
                   background: filter === f.key ? ac : 'var(--bg-raised)',
                   color: filter === f.key ? 'white' : 'var(--text-secondary)',
@@ -466,6 +552,8 @@ export default function Home() {
             ))}
           </div>
         </div>
+
+        <div className="h-px" style={{ background: 'var(--separator)' }} />
 
         {filteredVideos.length === 0 && (
           <div className="px-5 py-12 text-center">
@@ -485,6 +573,7 @@ export default function Home() {
             const isFav = favorites.has(video.id)
             const prog = videoProgress[video.id] ?? 0
             const isDone = prog >= DONE_THRESHOLD
+            const det = videoDetails[video.id]
             return (
               <div key={video.id} className="relative">
                 {isActive && (
@@ -542,21 +631,33 @@ export default function Home() {
                       }}>
                       {video.title}
                     </p>
-                    <div className="flex items-center gap-2 mt-1">
-                      <p className="text-[12px]" style={{ color: 'var(--text-tertiary)' }}>
+                    <div className="flex items-center gap-2 mt-1 flex-wrap">
+                      <p className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
                         {formatDate(video.published)}
                       </p>
+                      {det && !isActive && (
+                        <p className="text-[11px] tabular-nums" style={{ color: 'var(--text-tertiary)' }}>
+                          {isDone
+                            ? formatTime(det.dur)
+                            : <>{formatTime(det.pos)}<span style={{ color: 'var(--text-tertiary)', opacity: 0.5 }}> / {formatTime(det.dur)}</span></>
+                          }
+                        </p>
+                      )}
                       {isDone && !isActive && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium"
+                        <button onClick={(e) => resetProgress(video.id, e)}
+                          className="text-[10px] px-1.5 py-0.5 rounded-full font-medium active:opacity-50 flex items-center gap-1"
                           style={{ background: `${ac}20`, color: ac }}>
                           已听完
-                        </span>
+                          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                            <path d="M18 6L6 18M6 6l12 12"/>
+                          </svg>
+                        </button>
                       )}
                     </div>
                     {!isActive && prog > 0 && prog < DONE_THRESHOLD && (
-                      <div className="mt-2 h-[2px] rounded-full overflow-hidden" style={{ background: 'var(--separator)' }}>
+                      <div className="mt-1.5 h-[2px] rounded-full overflow-hidden" style={{ background: 'var(--separator)' }}>
                         <div className="h-full rounded-full"
-                          style={{ width: `${Math.round(prog * 100)}%`, background: ac, opacity: 0.5 }} />
+                          style={{ width: `${Math.round(prog * 100)}%`, background: ac, opacity: 0.6 }} />
                       </div>
                     )}
                   </div>
@@ -596,9 +697,12 @@ export default function Home() {
                 onClick={() => { setActiveChannelId(ch.id); closeSheet('channel', setShowChannelPicker) }}
                 className="w-full flex items-center gap-3.5 py-3.5 border-b last:border-0 active:opacity-60"
                 style={{ borderColor: 'var(--separator)' }}>
-                <div className="w-10 h-10 rounded-[12px] flex items-center justify-center flex-shrink-0"
+                <div className="w-10 h-10 rounded-[12px] overflow-hidden flex items-center justify-center flex-shrink-0"
                   style={{ background: `linear-gradient(145deg, ${ch.color} 0%, #5e5ce6 100%)` }}>
-                  <span className="text-lg font-bold text-white">{ch.initial}</span>
+                  {channelAvatars[ch.id]
+                    ? <img src={channelAvatars[ch.id]} alt="" className="w-full h-full object-cover" />
+                    : <span className="text-lg font-bold text-white">{ch.initial}</span>
+                  }
                 </div>
                 <div className="flex-1 text-left">
                   <p className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>{ch.name}</p>
@@ -624,19 +728,34 @@ export default function Home() {
             style={sheetAnim('timer')}
             onClick={e => e.stopPropagation()}>
             <div className="w-9 h-1 rounded-full mx-auto mb-5" style={{ background: 'var(--separator)' }} />
-            <p className="text-[17px] font-semibold mb-4" style={{ color: 'var(--text-primary)' }}>定时停止播放</p>
-            {TIMER_OPTIONS.map(opt => (
-              <button key={opt.minutes} onClick={() => startTimer(opt.minutes)}
-                className="w-full flex items-center justify-between py-4 border-b last:border-0 active:opacity-60"
-                style={{ borderColor: 'var(--separator)' }}>
-                <span className="text-[15px]" style={{ color: 'var(--text-primary)' }}>{opt.label}</span>
-                {timerMinutes === opt.minutes && (
-                  <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke={ac} strokeWidth="2.5">
-                    <polyline points="20 6 9 17 4 12"/>
-                  </svg>
-                )}
-              </button>
-            ))}
+            <p className="text-[17px] font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>定时停止播放</p>
+
+            {/* Scroll picker */}
+            <div className="flex items-center gap-1 mt-2">
+              <ScrollPicker values={HOUR_VALUES} selected={pickerHours} onChange={setPickerHours} label="小时" />
+              <span className="text-[28px] font-light pb-6" style={{ color: 'var(--text-secondary)' }}>:</span>
+              <ScrollPicker values={MIN_VALUES} selected={pickerMins} onChange={setPickerMins} label="分钟" />
+            </div>
+
+            {/* 放完这个停止 */}
+            <button onClick={() => setStopAfterCurrent(p => !p)}
+              className="w-full flex items-center justify-between py-3.5 border-t mt-1 active:opacity-60"
+              style={{ borderColor: 'var(--separator)' }}>
+              <span className="text-[15px]" style={{ color: 'var(--text-primary)' }}>放完这个停止</span>
+              {stopAfterCurrent
+                ? <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke={ac} strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                : <div className="w-5 h-5 rounded-full border-2" style={{ borderColor: 'var(--separator)' }} />
+              }
+            </button>
+
+            {/* 确认按钮 */}
+            <button onClick={() => startTimer(pickerHours * 60 + pickerMins)}
+              className="w-full py-3.5 rounded-2xl text-[16px] font-semibold mt-3 active:opacity-80"
+              style={{ background: ac, color: '#fff' }}>
+              {pickerHours * 60 + pickerMins > 0
+                ? `${pickerHours > 0 ? pickerHours + ' 小时 ' : ''}${pickerMins > 0 ? pickerMins + ' 分钟后停止' : '后停止'}`
+                : timerMinutes > 0 ? '关闭定时' : '不设定时'}
+            </button>
           </div>
         </div>
       )}
@@ -704,7 +823,7 @@ export default function Home() {
                   <text x="8" y="15" fontSize="5" fill="currentColor" fontWeight="bold">15</text>
                 </svg>
               </button>
-              <button onClick={() => setShowTimer(true)} className="active:opacity-50 p-1">
+              <button onClick={openTimerSheet} className="active:opacity-50 p-1">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
                   stroke={timerMinutes > 0 ? ac : 'var(--text-tertiary)'} strokeWidth="2">
                   <circle cx="12" cy="13" r="8"/>

@@ -27,6 +27,8 @@
 }
 
 * { -webkit-tap-highlight-color: transparent; }
+.scroll-picker { -ms-overflow-style: none; scrollbar-width: none; }
+.scroll-picker::-webkit-scrollbar { display: none }
 
 body {
   background: var(--bg);
