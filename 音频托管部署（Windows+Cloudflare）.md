@@ -110,6 +110,30 @@ curl -I -H "Range: bytes=0-100" https://audio.yanxuan-kr.cn/某个视频ID.m4a
 
 ---
 
+## 自动更新（博主发新视频后全自动）
+
+已经自动的部分（GitHub Actions，不用管）：
+
+- `update-videos.yml`：每 4 小时抓频道新视频 → 更新视频列表 → push
+- `generate-transcripts.yml`：每天凌晨 2 点给新视频生成字幕 → push
+- push 后 Vercel 自动重新部署前端
+
+唯一要在 Windows 上补的：**新视频的音频自动增量下载**。脚本已备好 `scripts\update-audio.bat`，
+它会先 `git pull` 拿到 CI 抓好的最新列表，再跑 `extract-audio.py` 把新音频下下来（已有的跳过）。
+
+挂 Windows 任务计划，每天跑一次（放在 CI 抓视频/字幕之后，比如凌晨 3 点）。
+管理员 PowerShell 跑一次（把路径换成你的实际路径）：
+
+```powershell
+schtasks /create /tn "podcast-audio-update" /sc daily /st 03:00 ^
+  /tr "C:\Users\你的用户名\Documents\claude\播客\podcast-player\scripts\update-audio.bat"
+```
+
+之后博主更新 → 几小时内列表/字幕自动上线，凌晨 3 点 Windows 自动把新音频补齐，全程不用动手。
+（前提：Caddy 和 cloudflared 都设成了开机自启，机器开着。）
+
+---
+
 ## 常见问题
 
 - **锁屏不显示控制条**：确认是用域名上的站点（不是本地 dev），且这一集确实在播原生音频（不是旧的 YouTube）。`mediaSession` 已在代码里接好。
