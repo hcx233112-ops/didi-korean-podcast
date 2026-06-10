@@ -1,46 +1,32 @@
-﻿# 注册 Windows 任务计划：每 4 小时自动同步音频
-# 用法：右键 → 用 PowerShell 运行（需管理员）
+﻿# 注册所有 DidiPodcast 任务计划
+# 用法：右键 → 以管理员身份运行
 
 $ProjectDir = Split-Path -Parent $PSScriptRoot
 $PythonExe  = (Get-Command python -ErrorAction SilentlyContinue).Source
 if (-not $PythonExe) { $PythonExe = (Get-Command py -ErrorAction SilentlyContinue).Source }
 if (-not $PythonExe) {
-    Write-Error "找不到 python，请先安装 Python 并确保在 PATH 中"
+    Write-Error "找不到 python"
     exit 1
 }
 
-$TaskName   = "DidiPodcast-SyncAudio"
-$ScriptPath = Join-Path $ProjectDir "scripts\sync-audio.py"
+function Register-DidiTask {
+    param($Name, $Script, $IntervalHours, $TimeoutMinutes, $Desc)
+    Unregister-ScheduledTask -TaskName $Name -Confirm:$false -ErrorAction SilentlyContinue
+    $Action   = New-ScheduledTaskAction -Execute $PythonExe -Argument "`"$ProjectDir\scripts\$Script`"" -WorkingDirectory $ProjectDir
+    $Trigger  = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Hours $IntervalHours) -Once -At (Get-Date)
+    $Settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes $TimeoutMinutes) -StartWhenAvailable -RunOnlyIfNetworkAvailable
+    Register-ScheduledTask -TaskName $Name -Action $Action -Trigger $Trigger -Settings $Settings -Description $Desc -RunLevel Highest -Force | Out-Null
+    Write-Host "  已注册: $Name（每 $IntervalHours 小时）"
+}
 
-Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+Write-Host "注册 DidiPodcast 任务计划..."
+Register-DidiTask "DidiPodcast-SyncAudio" "sync-audio.py"  4  120 "每4小时拉取新视频并下载音频"
+Register-DidiTask "DidiPodcast-Watchdog"  "watchdog.py"    1   10 "每小时巡检流程，自动修复异常"
 
-$Action  = New-ScheduledTaskAction `
-    -Execute $PythonExe `
-    -Argument "`"$ScriptPath`"" `
-    -WorkingDirectory $ProjectDir
-
-$Trigger = New-ScheduledTaskTrigger `
-    -RepetitionInterval (New-TimeSpan -Hours 4) `
-    -Once -At (Get-Date)
-
-$Settings = New-ScheduledTaskSettingsSet `
-    -ExecutionTimeLimit (New-TimeSpan -Hours 2) `
-    -StartWhenAvailable `
-    -RunOnlyIfNetworkAvailable
-
-Register-ScheduledTask `
-    -TaskName $TaskName `
-    -Action $Action `
-    -Trigger $Trigger `
-    -Settings $Settings `
-    -Description "每 4 小时拉取新视频并下载音频" `
-    -RunLevel Highest `
-    -Force | Out-Null
-
-Write-Host "任务已注册：$TaskName"
-Write-Host "每 4 小时运行一次，日志：$ProjectDir\audio-log.txt"
 Write-Host ""
-Write-Host "常用命令："
-Write-Host "  立即运行：Start-ScheduledTask -TaskName '$TaskName'"
-Write-Host "  查看状态：Get-ScheduledTask  -TaskName '$TaskName'"
-Write-Host "  删除任务：Unregister-ScheduledTask -TaskName '$TaskName' -Confirm:`$false"
+Write-Host "完成。日志文件："
+Write-Host "  音频同步: $ProjectDir\audio-log.txt"
+Write-Host "  巡检记录: $ProjectDir\watchdog-log.txt"
+Write-Host ""
+Write-Host "立即测试巡检："
+Write-Host "  Start-ScheduledTask -TaskName 'DidiPodcast-Watchdog'"
