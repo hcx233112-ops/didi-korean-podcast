@@ -98,6 +98,11 @@ jobs:
               except FileNotFoundError:
                   old_count = 0
 
+              # 防止 API 异常导致视频列表大幅缩水（允许最多减少 5 个）
+              if old_count > 0 and len(videos_sorted) < old_count - 5:
+                  print(f"⚠️  {ch['name']}: 视频数从 {old_count} 降至 {len(videos_sorted)}，跳过本次更新")
+                  continue
+
               result = {"channelId": ch["channelId"], "channelName": ch["name"], "videos": videos_sorted}
               with open(out_path, "w") as f:
                   json.dump(result, f, ensure_ascii=False, indent=2)
@@ -114,5 +119,6 @@ jobs:
             echo "Nothing to commit"
           else
             git commit -m "chore: update videos $(date -u +%Y-%m-%d)"
+            git pull --rebase origin main
             git push
           fi

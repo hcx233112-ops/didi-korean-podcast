@@ -34,5 +34,6 @@ jobs:
           else
             COUNT=$(git diff --staged --name-only | wc -l)
             git commit -m "chore: add ${COUNT} transcript files"
+            git pull --rebase origin main
             git push
           fi
