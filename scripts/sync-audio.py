@@ -179,12 +179,35 @@ def check_deps():
         sys.exit(1)
 
 
+def update_ytdlp():
+    """每周自动更新一次 yt-dlp，避免 YouTube 接口变更导致下载失败。"""
+    marker = ROOT / ".yt-dlp-updated"
+    try:
+        if marker.exists():
+            age_days = (datetime.now().timestamp() - marker.stat().st_mtime) / 86400
+            if age_days < 7:
+                return
+        log("更新 yt-dlp...")
+        r = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp", "-q"],
+            capture_output=True, text=True, timeout=60,
+        )
+        if r.returncode == 0:
+            marker.touch()
+            log("yt-dlp 已更新")
+        else:
+            log(f"yt-dlp 更新失败（非致命）: {r.stderr.strip()[:100]}")
+    except Exception as e:
+        log(f"yt-dlp 更新跳过: {e}")
+
+
 def main():
     rotate_log()
     log("===== sync-audio 开始 =====")
     log(f"python={sys.executable}  git={GIT}  ffmpeg={FFMPEG}")
 
     check_deps()
+    update_ytdlp()
     git_pull()
 
     videos = load_all_videos()
