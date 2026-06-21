@@ -113,9 +113,9 @@ def main():
                 no_transcript += 1
                 time.sleep(1)
             elif "IpBlocked" in err or "blocked" in err.lower():
-                print(f"  ❌ IP 被封，停止运行")
+                print(f"  ⚠️  IP 被封，跳过本次运行")
                 print(f"\n完成: {done}  跳过: {skipped}  无字幕: {no_transcript}  失败: {failed}")
-                sys.exit(1)
+                sys.exit(0)
             else:
                 print(f"  ❌ {err[:100]}")
                 failed += 1
