@@ -5,7 +5,7 @@
 push 后自动删除本地 JSON，用 .done 记录已处理的视频 ID
 """
 
-import json, os, time, sys, subprocess, concurrent.futures, tempfile
+import json, os, time, sys, subprocess, concurrent.futures, tempfile, platform, shutil
 sys.stdout.reconfigure(encoding="utf-8")
 sys.stderr.reconfigure(encoding="utf-8")
 from pathlib import Path
@@ -13,6 +13,8 @@ from deep_translator import GoogleTranslator
 import yt_dlp
 
 ROOT = Path(__file__).parent.parent
+_SUBPROCESS_FLAGS = subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" else 0
+
 TRANSCRIPTS_DIR = ROOT / "public" / "data" / "transcripts"
 TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
 CHANNELS_DIR = ROOT / "public" / "data" / "videos"
@@ -70,7 +72,7 @@ def translate_batch(texts, src="ko", tgt="zh-CN", batch_size=80):
         for attempt in range(2):
             try:
                 translator = GoogleTranslator(source=src, target=tgt)
-                translated = run_with_timeout(lambda: translator.translate_batch(batch), 15)
+                translated = run_with_timeout(lambda b=batch, t=translator: t.translate_batch(b), 15)
                 consec_fail = 0
                 break
             except Exception as e:
@@ -104,20 +106,19 @@ def fetch_subtitles_ytdlp(video_id):
         "no_warnings": True,
     }
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            run_with_timeout(lambda: ydl.download([f"https://www.youtube.com/watch?v={video_id}"]), 30)
-    except Exception as e:
-        raise Exception(f"yt-dlp 下载失败: {e}")
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                run_with_timeout(lambda: ydl.download([f"https://www.youtube.com/watch?v={video_id}"]), 30)
+        except Exception as e:
+            raise Exception(f"yt-dlp 下载失败: {e}")
 
-    files = list(tmpdir.glob("*.json3"))
-    if not files:
-        return None  # 无字幕
+        files = list(tmpdir.glob("*.json3"))
+        if not files:
+            return None  # 无字幕
 
-    data = json.loads(files[0].read_text(encoding="utf-8"))
-    # 清理临时文件
-    for f in tmpdir.iterdir():
-        f.unlink()
-    tmpdir.rmdir()
+        data = json.loads(files[0].read_text(encoding="utf-8"))
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
     segments = []
     for event in data.get("events", []):
@@ -173,17 +174,17 @@ def git_push_and_clean(done_ids: set):
     # 只 add 新文件，不 add 删除（避免覆盖之前批次）
     new_files = subprocess.run(
         ["git", "ls-files", "--others", "--exclude-standard", "public/data/transcripts/"],
-        cwd=str(ROOT), capture_output=True, text=True
+        cwd=str(ROOT), capture_output=True, text=True, creationflags=_SUBPROCESS_FLAGS
     ).stdout.strip().splitlines()
     if new_files:
-        subprocess.run(["git", "add", "--"] + new_files, cwd=str(ROOT))
-    result = subprocess.run(["git", "diff", "--staged", "--quiet"], cwd=str(ROOT))
+        subprocess.run(["git", "add", "--"] + new_files, cwd=str(ROOT), creationflags=_SUBPROCESS_FLAGS)
+    result = subprocess.run(["git", "diff", "--staged", "--quiet"], cwd=str(ROOT), creationflags=_SUBPROCESS_FLAGS)
     if result.returncode == 0:
         print("  没有新文件，跳过 push")
         return
-    subprocess.run(["git", "commit", "-m", "chore: add transcripts (auto)"], cwd=str(ROOT))
-    subprocess.run(["git", "pull", "--rebase", "origin", "main"], cwd=str(ROOT))
-    push_result = subprocess.run(["git", "push"], cwd=str(ROOT))
+    subprocess.run(["git", "commit", "-m", "chore: add transcripts (auto)"], cwd=str(ROOT), creationflags=_SUBPROCESS_FLAGS)
+    subprocess.run(["git", "pull", "--rebase", "origin", "main"], cwd=str(ROOT), creationflags=_SUBPROCESS_FLAGS)
+    push_result = subprocess.run(["git", "push"], cwd=str(ROOT), creationflags=_SUBPROCESS_FLAGS)
     if push_result.returncode != 0:
         print("  ⚠️ Push 失败")
         return

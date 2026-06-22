@@ -44,12 +44,8 @@ def needs_translation(segs):
     return any(s.get("zh", "") == s.get("ko", "") and s.get("ko", "").strip() for s in segs)
 
 
-def process_file(path):
-    data = json.loads(path.read_text(encoding="utf-8"))
+def process_file(path, data):
     segs = data.get("segments", [])
-    if not segs or not needs_translation(segs):
-        return False
-
     indices  = [i for i, s in enumerate(segs) if s.get("zh", "") == s.get("ko", "") and s.get("ko", "").strip()]
     ko_texts = [segs[i]["ko"] for i in indices]
     zh_texts = translate_all(ko_texts)
@@ -58,7 +54,6 @@ def process_file(path):
         segs[i]["zh"] = zh
 
     path.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    return True
 
 
 def main():
@@ -78,7 +73,7 @@ def main():
         untrans = sum(1 for s in segs if s.get("zh", "") == s.get("ko", "") and s.get("ko", "").strip())
         print(f"[{i}/{total}] {f.stem} ({untrans} 条)...", end=" ", flush=True)
         try:
-            process_file(f)
+            process_file(f, data)
             done += 1
             print("完成", flush=True)
         except Exception as e:

@@ -34,7 +34,7 @@ def translate_batch(texts, batch_size=80):
         for attempt in range(2):
             try:
                 translator = GoogleTranslator(source="ko", target="zh-CN")
-                translated = run_with_timeout(lambda: translator.translate_batch(batch), 20)
+                translated = run_with_timeout(lambda b=batch, t=translator: t.translate_batch(b), 20)
                 consec_fail = 0
                 break
             except Exception as e:
@@ -86,7 +86,7 @@ def main():
         print(f"[{i}/{total}] {vid} {title}")
 
         try:
-            transcript_list = run_with_timeout(lambda: api.list(vid), 20)
+            transcript_list = run_with_timeout(lambda v=vid: api.list(v), 20)
             ko = transcript_list.find_transcript(["ko"])
             segments = run_with_timeout(ko.fetch, 20)
 

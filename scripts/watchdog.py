@@ -216,8 +216,7 @@ def main():
         if fixes:
             log(f"已处理: {'; '.join(fixes)}")
         else:
-            log("⚠️  无法自动修复，发送通知")
-            notify("Didi播客 自动化异常", "; ".join(issues))
+            log(f"⚠️  无法自动修复: {'; '.join(issues)}")
     else:
         log("✅ 一切正常")
 

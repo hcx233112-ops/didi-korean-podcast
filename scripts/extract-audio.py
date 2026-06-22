@@ -6,11 +6,19 @@
 需要 ffmpeg 在 PATH 中（Windows: winget install Gyan.FFmpeg）。
 """
 
-import json, sys, shutil
+import json, sys, shutil, subprocess, platform
 sys.stdout.reconfigure(encoding="utf-8")
 sys.stderr.reconfigure(encoding="utf-8")
 from pathlib import Path
 import yt_dlp
+
+if platform.system() == "Windows":
+    _orig_popen = subprocess.Popen.__init__
+    def _popen_no_window(self, *args, **kwargs):
+        kwargs.setdefault("creationflags", 0)
+        kwargs["creationflags"] |= subprocess.CREATE_NO_WINDOW
+        _orig_popen(self, *args, **kwargs)
+    subprocess.Popen.__init__ = _popen_no_window
 
 ROOT = Path(__file__).parent.parent
 CHANNELS_DIR = ROOT / "public" / "data" / "videos"
@@ -31,10 +39,14 @@ def load_all_videos():
     return unique
 
 
+MIN_AUDIO_BYTES = 50 * 1024
+
 def extract(video_id):
     out = AUDIO_DIR / f"{video_id}.m4a"
-    if out.exists():
+    if out.exists() and out.stat().st_size >= MIN_AUDIO_BYTES:
         return "skip"
+    if out.exists():
+        out.unlink()
     ydl_opts = {
         "format": "bestaudio/best",
         "outtmpl": str(AUDIO_DIR / "%(id)s.%(ext)s"),
@@ -61,7 +73,8 @@ def main():
     for i, video in enumerate(videos, 1):
         vid = video["id"]
         title = video["title"][:40]
-        if (AUDIO_DIR / f"{vid}.m4a").exists():
+        p = AUDIO_DIR / f"{vid}.m4a"
+        if p.exists() and p.stat().st_size >= MIN_AUDIO_BYTES:
             skipped += 1
             continue
         print(f"[{i}/{total}] {vid} {title}")

@@ -1,5 +1,2 @@
 @echo off
-chcp 65001 >nul
-cd /d "%~dp0.."
-python scripts\extract-audio.py
-pause
+powershell -WindowStyle Hidden -Command "cd '%~dp0..'; python scripts\extract-audio.py *>> logs\extract-audio.log 2>&1"
