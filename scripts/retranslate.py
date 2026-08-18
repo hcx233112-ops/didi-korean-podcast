@@ -3,10 +3,15 @@
 补翻译：把 zh==ko 的 segments 重新翻译成中文
 使用 Google Translate 公开端点，支持断点续传
 """
-import json, sys, time, requests
+import json, sys, time, requests, os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+# 无控制台环境下 stdout/stderr 为 None，先容错再 reconfigure
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w", encoding="utf-8")
 sys.stdout.reconfigure(encoding="utf-8")
 sys.stderr.reconfigure(encoding="utf-8")
 
