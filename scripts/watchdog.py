@@ -4,10 +4,15 @@
 发现问题 → 能修就修，修不了就弹 Windows 系统通知。
 """
 
-import json, sys, subprocess, shutil, time, re
+import json, sys, subprocess, shutil, time, re, os
 from datetime import datetime, timedelta
 from pathlib import Path
 
+# pythonw 无控制台环境下 stdout/stderr 为 None，先容错再 reconfigure
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w", encoding="utf-8")
 sys.stdout.reconfigure(encoding="utf-8")
 sys.stderr.reconfigure(encoding="utf-8")
 
