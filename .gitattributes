@@ -1,0 +1,2 @@
+# Batch files must stay CRLF, otherwise cmd.exe garbles UTF-8 Chinese text
+*.bat text eol=crlf
