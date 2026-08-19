@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import channelsData from '@/data/channels.json'
 
-interface Channel { id: string; name: string; description: string; initial: string; color: string; channelId?: string }
+interface Channel { id: string; name: string; description: string; initial: string; color: string; channelId?: string; avatar?: string }
 interface Video { id: string; title: string; published: string; thumbnail: string; duration?: number }
 interface TranscriptSegment { start: number; end: number; ko: string; zh: string }
 interface ChannelVideos { channelName: string; videos: Video[] }
@@ -13,7 +13,6 @@ interface SyncData {
 }
 
 const DONE_THRESHOLD = 0.9
-const AVATAR_TTL = 7 * 24 * 3600 * 1000
 
 const HOUR_VALUES = [0, 1, 2, 3, 4, 5]
 const MIN_VALUES = Array.from({ length: 60 }, (_, i) => i)
@@ -66,8 +65,14 @@ function formatTime(s: number) {
   if (!s || isNaN(s)) return '0:00'
   return `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`
 }
+const dateCache = new Map<string, string>()
 function formatDate(s: string) {
-  return new Date(s).toLocaleDateString('zh-CN', { year: 'numeric', month: 'short', day: 'numeric' })
+  let d = dateCache.get(s)
+  if (!d) {
+    d = new Date(s).toLocaleDateString('zh-CN', { year: 'numeric', month: 'short', day: 'numeric' })
+    dateCache.set(s, d)
+  }
+  return d
 }
 
 type SheetName = 'channel' | 'timer' | 'transcript' | 'note'
@@ -79,6 +84,7 @@ const FILTERS: { key: FilterType; label: string }[] = [
   { key: 'inprogress', label: '进行中' },
   { key: 'done', label: '已听完' },
 ]
+const TRANSCRIPT_RANGE = 100
 
 export default function Home() {
   const [activeChannelId, setActiveChannelId] = useState(channels[0].id)
@@ -105,7 +111,6 @@ export default function Home() {
   const [videoDetails, setVideoDetails] = useState<Record<string, { pos: number; dur: number }>>({})
   const [closingSheet, setClosingSheet] = useState<SheetName | null>(null)
   const [stopAfterCurrent, setStopAfterCurrent] = useState(false)
-  const [channelAvatars, setChannelAvatars] = useState<Record<string, string>>({})
   const [pickerHours, setPickerHours] = useState(0)
   const [pickerMins, setPickerMins] = useState(0)
   // Feature: notes
@@ -141,33 +146,11 @@ export default function Home() {
   const videos = channelVideos[activeChannelId] ?? []
   const ac = activeChannel.color
 
-  // ── Load channel avatars (cached with 7-day TTL) ──
+  // ── Register service worker ──
   useEffect(() => {
-    channels.forEach(ch => {
-      const raw = localStorage.getItem(`podcast-avatar-${ch.id}`)
-      let cachedUrl: string | null = null
-      let needsFetch = true
-      if (raw) {
-        try {
-          const obj = JSON.parse(raw)
-          cachedUrl = obj.url ?? null
-          needsFetch = !obj.ts || Date.now() - obj.ts >= AVATAR_TTL
-        } catch {
-          cachedUrl = raw
-          needsFetch = true
-        }
-      }
-      if (cachedUrl) setChannelAvatars(prev => ({ ...prev, [ch.id]: cachedUrl! }))
-      if (!needsFetch) return
-      fetch(`/api/avatar?channelId=${ch.channelId || ch.id}`)
-        .then(r => r.json())
-        .then(({ url }: { url: string | null }) => {
-          if (!url) return
-          setChannelAvatars(prev => ({ ...prev, [ch.id]: url }))
-          localStorage.setItem(`podcast-avatar-${ch.id}`, JSON.stringify({ url, ts: Date.now() }))
-        })
-        .catch(() => {})
-    })
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {})
+    }
   }, [])
 
   // Keep refs current
@@ -561,9 +544,30 @@ export default function Home() {
     finally { setTranscriptLoading(false) }
   }
 
-  const currentSegIdx = useMemo(() => transcriptSegs.findIndex(
-    (s, i) => elapsed >= s.start && (i === transcriptSegs.length - 1 || elapsed < transcriptSegs[i + 1].start)
-  ), [transcriptSegs, elapsed])
+  const currentSegIdx = useMemo(() => {
+    const arr = transcriptSegs
+    if (!arr.length || elapsed < arr[0].start) return -1
+    let lo = 0, hi = arr.length - 1
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1
+      if (arr[mid].start <= elapsed) lo = mid; else hi = mid - 1
+    }
+    return lo
+  }, [transcriptSegs, elapsed])
+
+  const transcriptWindow = useMemo(() => {
+    const n = transcriptSegs.length
+    if (n <= TRANSCRIPT_RANGE * 2) {
+      return { items: transcriptSegs.map((seg, i) => ({ seg, i })), top: 0, bottom: 0 }
+    }
+    const lo = Math.max(0, currentSegIdx - TRANSCRIPT_RANGE)
+    const hi = Math.min(n - 1, currentSegIdx + TRANSCRIPT_RANGE)
+    return {
+      items: transcriptSegs.slice(lo, hi + 1).map((seg, j) => ({ seg, i: lo + j })),
+      top: lo,
+      bottom: n - hi - 1,
+    }
+  }, [transcriptSegs, currentSegIdx])
 
   useEffect(() => {
     if (!showTranscript || currentSegIdx < 0 || userScrollingRef.current) return
@@ -593,6 +597,130 @@ export default function Home() {
     return true
   }), [videos, videoProgress, filter, favorites, searchQuery])
 
+  // 稳定回调：列表用 useMemo 缓存，回调引用必须稳定，避免每秒进度更新触发整列重渲染
+  const handlersRef = useRef({ play, toggleFavorite, resetProgress })
+  useEffect(() => { handlersRef.current = { play, toggleFavorite, resetProgress } })
+  const onPlay = useCallback((v: Video) => handlersRef.current.play(v), [])
+  const onToggleFav = useCallback((id: string, e: React.MouseEvent) => handlersRef.current.toggleFavorite(id, e), [])
+  const onResetProgress = useCallback((id: string, e: React.MouseEvent) => handlersRef.current.resetProgress(id, e), [])
+
+  const videoList = useMemo(() => filteredVideos.map(video => {
+    const isActive = current?.id === video.id
+    const isFav = favorites.has(video.id)
+    const prog = videoProgress[video.id] ?? 0
+    const isDone = prog >= DONE_THRESHOLD
+    const det = videoDetails[video.id]
+    const totalDur = video.duration ?? det?.dur
+    const pct = prog > 0 ? Math.round(prog * 100) : 0
+    const note = notes[video.id]
+    return (
+      <div key={video.id} className="relative">
+        {isActive && (
+          <div className="absolute left-0 top-3 bottom-3 w-[3px] rounded-r-full" style={{ background: ac }} />
+        )}
+        <div
+          onClick={() => onPlay(video)}
+          className="flex items-center gap-3.5 px-5 py-3.5 cursor-pointer active:opacity-60 transition-opacity"
+          style={{ background: isActive ? `${ac}12` : 'transparent' }}
+        >
+          <div className="relative flex-shrink-0">
+            <img src={video.thumbnail} alt="" loading="lazy"
+              className="w-[54px] h-[54px] rounded-xl object-cover"
+              style={{ background: 'var(--bg-raised)' }} />
+            {!isActive && isDone && (
+              <div className="absolute -top-1 -right-1 w-[18px] h-[18px] rounded-full flex items-center justify-center shadow-sm"
+                style={{ background: ac }}>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3">
+                  <polyline points="20 6 9 17 4 12"/>
+                </svg>
+              </div>
+            )}
+            {isActive && (
+              <div className="absolute inset-0 rounded-xl flex items-center justify-center"
+                style={{ background: `${ac}cc` }}>
+                {playing ? (
+                  <div className="flex items-end gap-[3px]" style={{ height: 14 }}>
+                    {[0, 0.18, 0.36].map((delay, i) => (
+                      <div key={i} style={{
+                        width: 3, height: 14, background: 'white', borderRadius: 2,
+                        transformOrigin: 'bottom',
+                        animation: `eq-bounce 0.65s ease-in-out infinite`,
+                        animationDelay: `${delay}s`,
+                      }} />
+                    ))}
+                  </div>
+                ) : (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="white">
+                    <path d="M8 5v14l11-7z"/>
+                  </svg>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="flex-1 min-w-0 pr-9">
+            <p className="text-[14px] leading-snug line-clamp-2"
+              style={{
+                color: isActive ? ac : 'var(--text-primary)',
+                fontWeight: isActive ? 600 : 500,
+              }}>
+              {video.title}
+            </p>
+            <div className="flex items-center gap-2 mt-1 flex-wrap">
+              <p className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
+                {formatDate(video.published)}
+              </p>
+              {totalDur !== undefined && (
+                <p className="text-[11px] tabular-nums" style={{ color: 'var(--text-tertiary)' }}>
+                  {det && !isDone
+                    ? <>{formatTime(det.pos)}<span style={{ opacity: 0.5 }}> / {formatTime(totalDur)}</span></>
+                    : formatTime(totalDur)}
+                </p>
+              )}
+              {pct > 0 && !isDone && !isActive && (
+                <span className="text-[10px] tabular-nums font-medium" style={{ color: ac, opacity: 0.8 }}>
+                  {pct}%
+                </span>
+              )}
+              {isDone && !isActive && (
+                <button onClick={(e) => onResetProgress(video.id, e)}
+                  className="text-[10px] px-1.5 py-0.5 rounded-full font-medium active:opacity-50 flex items-center gap-1"
+                  style={{ background: `${ac}20`, color: ac }}>
+                  已听完
+                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <path d="M18 6L6 18M6 6l12 12"/>
+                  </svg>
+                </button>
+              )}
+            </div>
+            {prog > 0 && prog < DONE_THRESHOLD && (
+              <div className="mt-1.5 h-[2px] rounded-full overflow-hidden" style={{ background: 'var(--separator)' }}>
+                <div className="h-full rounded-full"
+                  style={{ width: `${Math.round(prog * 100)}%`, background: ac, opacity: isActive ? 1 : 0.6 }} />
+              </div>
+            )}
+            {note && (
+              <p className="text-[11px] mt-1 line-clamp-1" style={{ color: 'var(--text-tertiary)', fontStyle: 'italic' }}>
+                {note}
+              </p>
+            )}
+          </div>
+        </div>
+
+        <button
+          onClick={(e) => onToggleFav(video.id, e)}
+          className="absolute right-3 top-1/2 -translate-y-1/2 p-2.5 active:scale-90 transition-transform">
+          <svg width="17" height="17" viewBox="0 0 24 24"
+            fill={isFav ? ac : 'none'}
+            stroke={isFav ? ac : 'var(--text-tertiary)'}
+            strokeWidth="2">
+            <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+          </svg>
+        </button>
+      </div>
+    )
+  }), [filteredVideos, videoProgress, favorites, notes, videoDetails, current, playing, ac, onPlay, onToggleFav, onResetProgress])
+
   playFnRef.current = play
 
   return (
@@ -611,8 +739,8 @@ export default function Home() {
               className="flex-shrink-0 active:scale-95 transition-transform duration-150">
               <div className="w-[52px] h-[52px] rounded-[14px] shadow overflow-hidden flex items-center justify-center"
                 style={{ background: `linear-gradient(145deg, ${ac} 0%, #5e5ce6 100%)` }}>
-                {channelAvatars[activeChannel.id]
-                  ? <img src={channelAvatars[activeChannel.id]} alt="" className="w-full h-full object-cover" />
+                {activeChannel.avatar
+                  ? <img src={activeChannel.avatar} alt="" className="w-full h-full object-cover" />
                   : <span className="text-2xl font-bold text-white select-none">{activeChannel.initial}</span>
                 }
               </div>
@@ -693,130 +821,7 @@ export default function Home() {
 
         {/* Video list */}
         <div className="pb-1">
-          {filteredVideos.map(video => {
-            const isActive = current?.id === video.id
-            const isFav = favorites.has(video.id)
-            const prog = videoProgress[video.id] ?? 0
-            const isDone = prog >= DONE_THRESHOLD
-            const det = videoDetails[video.id]
-            const totalDur = video.duration ?? det?.dur
-            const displayProg = isActive ? progress : prog
-            const pct = prog > 0 ? Math.round(prog * 100) : 0
-            const note = notes[video.id]
-            return (
-              <div key={video.id} className="relative">
-                {isActive && (
-                  <div className="absolute left-0 top-3 bottom-3 w-[3px] rounded-r-full"
-                    style={{ background: ac }} />
-                )}
-                <div
-                  onClick={() => play(video)}
-                  className="flex items-center gap-3.5 px-5 py-3.5 cursor-pointer active:opacity-60 transition-opacity"
-                  style={{ background: isActive ? `${ac}12` : 'transparent' }}
-                >
-                  {/* Thumbnail */}
-                  <div className="relative flex-shrink-0">
-                    <img src={video.thumbnail} alt="" loading="lazy"
-                      className="w-[54px] h-[54px] rounded-xl object-cover"
-                      style={{ background: 'var(--bg-raised)' }} />
-                    {!isActive && isDone && (
-                      <div className="absolute -top-1 -right-1 w-[18px] h-[18px] rounded-full flex items-center justify-center shadow-sm"
-                        style={{ background: ac }}>
-                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3">
-                          <polyline points="20 6 9 17 4 12"/>
-                        </svg>
-                      </div>
-                    )}
-                    {isActive && (
-                      <div className="absolute inset-0 rounded-xl flex items-center justify-center"
-                        style={{ background: `${ac}cc` }}>
-                        {playing ? (
-                          <div className="flex items-end gap-[3px]" style={{ height: 14 }}>
-                            {[0, 0.18, 0.36].map((delay, i) => (
-                              <div key={i} style={{
-                                width: 3, height: 14, background: 'white', borderRadius: 2,
-                                transformOrigin: 'bottom',
-                                animation: `eq-bounce 0.65s ease-in-out infinite`,
-                                animationDelay: `${delay}s`,
-                              }} />
-                            ))}
-                          </div>
-                        ) : (
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="white">
-                            <path d="M8 5v14l11-7z"/>
-                          </svg>
-                        )}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Info */}
-                  <div className="flex-1 min-w-0 pr-9">
-                    <p className="text-[14px] leading-snug line-clamp-2"
-                      style={{
-                        color: isActive ? ac : 'var(--text-primary)',
-                        fontWeight: isActive ? 600 : 500,
-                      }}>
-                      {video.title}
-                    </p>
-                    <div className="flex items-center gap-2 mt-1 flex-wrap">
-                      <p className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
-                        {formatDate(video.published)}
-                      </p>
-                      {totalDur !== undefined && (
-                        <p className="text-[11px] tabular-nums" style={{ color: 'var(--text-tertiary)' }}>
-                          {isActive
-                            ? <>{formatTime(elapsed)}<span style={{ opacity: 0.5 }}> / {formatTime(duration || totalDur)}</span></>
-                            : det && !isDone
-                              ? <>{formatTime(det.pos)}<span style={{ opacity: 0.5 }}> / {formatTime(totalDur)}</span></>
-                              : formatTime(totalDur)
-                          }
-                        </p>
-                      )}
-                      {pct > 0 && !isDone && !isActive && (
-                        <span className="text-[10px] tabular-nums font-medium" style={{ color: ac, opacity: 0.8 }}>
-                          {pct}%
-                        </span>
-                      )}
-                      {isDone && !isActive && (
-                        <button onClick={(e) => resetProgress(video.id, e)}
-                          className="text-[10px] px-1.5 py-0.5 rounded-full font-medium active:opacity-50 flex items-center gap-1"
-                          style={{ background: `${ac}20`, color: ac }}>
-                          已听完
-                          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                            <path d="M18 6L6 18M6 6l12 12"/>
-                          </svg>
-                        </button>
-                      )}
-                    </div>
-                    {displayProg > 0 && displayProg < DONE_THRESHOLD && (
-                      <div className="mt-1.5 h-[2px] rounded-full overflow-hidden" style={{ background: 'var(--separator)' }}>
-                        <div className="h-full rounded-full"
-                          style={{ width: `${Math.round(displayProg * 100)}%`, background: ac, opacity: isActive ? 1 : 0.6 }} />
-                      </div>
-                    )}
-                    {note && (
-                      <p className="text-[11px] mt-1 line-clamp-1" style={{ color: 'var(--text-tertiary)', fontStyle: 'italic' }}>
-                        {note}
-                      </p>
-                    )}
-                  </div>
-                </div>
-
-                {/* Favorite button */}
-                <button
-                  onClick={(e) => toggleFavorite(video.id, e)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 p-2.5 active:scale-90 transition-transform">
-                  <svg width="17" height="17" viewBox="0 0 24 24"
-                    fill={isFav ? ac : 'none'}
-                    stroke={isFav ? ac : 'var(--text-tertiary)'}
-                    strokeWidth="2">
-                    <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
-                  </svg>
-                </button>
-              </div>
-            )
-          })}
+          {videoList}
         </div>
 
         {current && <div className="h-28" />}
@@ -839,8 +844,8 @@ export default function Home() {
                 style={{ borderColor: 'var(--separator)' }}>
                 <div className="w-10 h-10 rounded-[12px] overflow-hidden flex items-center justify-center flex-shrink-0"
                   style={{ background: `linear-gradient(145deg, ${ch.color} 0%, #5e5ce6 100%)` }}>
-                  {channelAvatars[ch.id]
-                    ? <img src={channelAvatars[ch.id]} alt="" className="w-full h-full object-cover" />
+                  {ch.avatar
+                    ? <img src={ch.avatar} alt="" className="w-full h-full object-cover" />
                     : <span className="text-lg font-bold text-white">{ch.initial}</span>
                   }
                 </div>
@@ -1095,7 +1100,8 @@ export default function Home() {
             onTouchEnd={() => { setTimeout(() => { userScrollingRef.current = false }, 3000) }}>
             {transcriptLoading && <p className="text-center py-20 text-sm" style={{ color: 'var(--text-tertiary)' }}>加载字幕中…</p>}
             {transcriptError && <p className="text-center py-20 text-sm" style={{ color: 'var(--text-tertiary)' }}>{transcriptError}</p>}
-            {transcriptSegs.map((seg, i) => {
+            <div style={{ height: transcriptWindow.top * 48 }} />
+            {transcriptWindow.items.map(({ seg, i }) => {
               const isActiveSeg = i === currentSegIdx
               return (
                 <button id={`seg-${i}`} key={i}
@@ -1128,6 +1134,7 @@ export default function Home() {
                 </button>
               )
             })}
+            <div style={{ height: transcriptWindow.bottom * 48 }} />
             <div className="h-24" />
           </div>
 
