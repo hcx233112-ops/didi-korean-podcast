@@ -50,3 +50,5 @@ cloudflared.exe
 *.log
 audio-err.txt
 audio-log.txt
+watchdog-log.txt
+.yt-dlp-updated

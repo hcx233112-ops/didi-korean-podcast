@@ -23,6 +23,8 @@ AUDIO_DIR    = ROOT / "audio"
 LOG_FILE     = ROOT / "audio-log.txt"
 LOCK_FILE    = ROOT / ".sync-audio.lock"
 
+NO_WINDOW = 0x08000000  # CREATE_NO_WINDOW：子进程不弹控制台窗口
+
 LOG_MAX_LINES  = 1000
 MIN_AUDIO_BYTES = 50 * 1024  # < 50KB 视为损坏
 
@@ -114,6 +116,7 @@ def git_pull():
         text=True,
         encoding="utf-8",
         errors="replace",
+        creationflags=NO_WINDOW,
     )
     if r.returncode != 0:
         log(f"git pull 失败: {r.stderr.strip()}")
@@ -209,7 +212,7 @@ def update_ytdlp():
         log("更新 yt-dlp...")
         r = subprocess.run(
             [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp", "-q"],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True, text=True, timeout=60, creationflags=NO_WINDOW,
         )
         if r.returncode == 0:
             marker.touch()
