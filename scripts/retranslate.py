@@ -16,7 +16,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 sys.stderr.reconfigure(encoding="utf-8")
 
 TRANSCRIPTS_DIR = Path(__file__).parent.parent / "public" / "data" / "transcripts"
-WORKERS = 15  # 并发请求数
+WORKERS = 6  # 并发请求数（dict-chrome-ex 端点，6 并发实测不触发限流）
 
 
 def gtrans(text):
@@ -24,16 +24,18 @@ def gtrans(text):
         try:
             r = requests.get(
                 "https://translate.googleapis.com/translate_a/single",
-                params={"client": "gtx", "sl": "ko", "tl": "zh-CN", "dt": "t", "q": text},
+                params={"client": "dict-chrome-ex", "sl": "ko", "tl": "zh-CN", "dt": "t", "q": text},
                 headers={"User-Agent": "Mozilla/5.0"},
                 timeout=15,
             )
+            if r.status_code != 200:
+                raise Exception(f"HTTP {r.status_code}")
             data = r.json()
             return "".join(seg[0] for seg in data[0] if seg[0])
         except Exception as e:
             if attempt == 2:
                 return text   # 翻译失败保留原文
-            time.sleep(1)
+            time.sleep(1 + attempt)
 
 
 def translate_all(texts):
