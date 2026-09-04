@@ -51,4 +51,10 @@ cloudflared.exe
 audio-err.txt
 audio-log.txt
 watchdog-log.txt
+transcript-log.txt
+transcript-err.txt
 .yt-dlp-updated
+
+# Python 缓存
+__pycache__/
+*.pyc

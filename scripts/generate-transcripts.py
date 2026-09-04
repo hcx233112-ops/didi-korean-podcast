@@ -178,12 +178,14 @@ def git_push_and_clean(done_ids: set):
     ).stdout.strip().splitlines()
     if new_files:
         subprocess.run(["git", "add", "--"] + new_files, cwd=str(ROOT), creationflags=_SUBPROCESS_FLAGS)
+    # .done 是被跟踪文件，save_done() 会改动它，必须一起 stage，否则 pull --rebase 会因工作区脏而中止
+    subprocess.run(["git", "add", "--", str(DONE_FILE)], cwd=str(ROOT), creationflags=_SUBPROCESS_FLAGS)
     result = subprocess.run(["git", "diff", "--staged", "--quiet"], cwd=str(ROOT), creationflags=_SUBPROCESS_FLAGS)
     if result.returncode == 0:
         print("  没有新文件，跳过 push")
         return
     subprocess.run(["git", "commit", "-m", "chore: add transcripts (auto)"], cwd=str(ROOT), creationflags=_SUBPROCESS_FLAGS)
-    subprocess.run(["git", "pull", "--rebase", "origin", "main"], cwd=str(ROOT), creationflags=_SUBPROCESS_FLAGS)
+    subprocess.run(["git", "pull", "--rebase", "--autostash", "origin", "main"], cwd=str(ROOT), creationflags=_SUBPROCESS_FLAGS)
     push_result = subprocess.run(["git", "push"], cwd=str(ROOT), creationflags=_SUBPROCESS_FLAGS)
     if push_result.returncode != 0:
         print("  ⚠️ Push 失败")
