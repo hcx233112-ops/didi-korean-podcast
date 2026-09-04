@@ -13,7 +13,7 @@ NO_WINDOW = 0x08000000
 
 def already_running(name):
     r = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {name}"],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, creationflags=NO_WINDOW)
     return name.lower() in r.stdout.lower()
 
 

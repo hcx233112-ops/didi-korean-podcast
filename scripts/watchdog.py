@@ -127,6 +127,7 @@ def task_exists(name: str) -> bool:
         ["powershell", "-NoProfile", "-Command",
          f"(Get-ScheduledTask -TaskName '{name}' -ErrorAction SilentlyContinue) -ne $null"],
         capture_output=True, text=True,
+        creationflags=0x08000000,  # CREATE_NO_WINDOW：pythonw 下不弹控制台
     )
     return r.stdout.strip() == "True"
 
@@ -136,6 +137,7 @@ def try_reregister_tasks():
     r = subprocess.run(
         ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(setup_ps1)],
         capture_output=True, text=True,
+        creationflags=0x08000000,  # CREATE_NO_WINDOW
     )
     if r.returncode == 0:
         log("✅ 任务重新注册成功")
