@@ -32,9 +32,9 @@ def gtrans(text):
                 raise Exception(f"HTTP {r.status_code}")
             data = r.json()
             return "".join(seg[0] for seg in data[0] if seg[0])
-        except Exception as e:
+        except Exception:
             if attempt == 2:
-                return text   # 翻译失败保留原文
+                return None   # 网络/HTTP 失败：返回 None，下次再试
             time.sleep(1 + attempt)
 
 
@@ -47,18 +47,28 @@ def translate_all(texts):
     return results
 
 
+def _pending(s):
+    # zh 与 ko 相同、ko 非空、且未被标记为不可译
+    return s.get("zh", "") == s.get("ko", "") and s.get("ko", "").strip() and not s.get("nt")
+
+
 def needs_translation(segs):
-    return any(s.get("zh", "") == s.get("ko", "") and s.get("ko", "").strip() for s in segs)
+    return any(_pending(s) for s in segs)
 
 
 def process_file(path, data):
     segs = data.get("segments", [])
-    indices  = [i for i, s in enumerate(segs) if s.get("zh", "") == s.get("ko", "") and s.get("ko", "").strip()]
+    indices  = [i for i, s in enumerate(segs) if _pending(segs[i])]
     ko_texts = [segs[i]["ko"] for i in indices]
     zh_texts = translate_all(ko_texts)
 
     for i, zh in zip(indices, zh_texts):
-        segs[i]["zh"] = zh
+        if zh is None:
+            continue                    # 本次失败，保留原状下次再试
+        if zh == segs[i]["ko"]:
+            segs[i]["nt"] = 1           # 译文与原文一致 → 不可译，永久跳过
+        else:
+            segs[i]["zh"] = zh
 
     path.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
 
@@ -77,7 +87,7 @@ def main():
             skipped += 1
             continue
 
-        untrans = sum(1 for s in segs if s.get("zh", "") == s.get("ko", "") and s.get("ko", "").strip())
+        untrans = sum(1 for s in segs if _pending(s))
         print(f"[{i}/{total}] {f.stem} ({untrans} 条)...", end=" ", flush=True)
         try:
             process_file(f, data)
