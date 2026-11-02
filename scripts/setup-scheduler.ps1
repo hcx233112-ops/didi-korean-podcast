@@ -1,43 +1,48 @@
-﻿# 注册所有 DidiPodcast 任务计划
-# 用法：右键 → 以管理员身份运行
-
+﻿# Update tasks in place. Run as administrator; existing valid triggers are retained.
+$ErrorActionPreference = 'Stop'
 $ProjectDir = Split-Path -Parent $PSScriptRoot
-# 优先用 pythonw.exe（无控制台窗口），找不到再退回 python.exe
-$PythonExe = $null
-$PythonDir = (Get-Command python -ErrorAction SilentlyContinue).Source
-if ($PythonDir) {
-    $PythonwPath = Join-Path (Split-Path $PythonDir) "pythonw.exe"
-    if (Test-Path $PythonwPath) { $PythonExe = $PythonwPath }
-    else { $PythonExe = $PythonDir }
-}
-if (-not $PythonExe) {
-    $PyDir = (Get-Command py -ErrorAction SilentlyContinue).Source
-    if ($PyDir) { $PythonExe = $PyDir }
-}
-if (-not $PythonExe) {
-    Write-Error "找不到 python"
+try {
+    $PythonExe = (Get-Command python -ErrorAction Stop).Source
+    $Pythonw = Join-Path (Split-Path $PythonExe) 'pythonw.exe'
+    if (Test-Path -LiteralPath $Pythonw) { $PythonExe = $Pythonw }
+
+    function Register-DidiTask {
+        param($Name, $Script, $IntervalHours, $DailyTime, $TimeoutMinutes, $Description, [switch]$AtLogon)
+        $Old = Get-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue
+        if ($Old -and $Old.Triggers -and @($Old.Triggers | Where-Object { $_.Enabled }).Count -gt 0) {
+            $Triggers = $Old.Triggers
+        } elseif ($AtLogon) {
+            $Triggers = New-ScheduledTaskTrigger -AtLogOn
+        } elseif ($DailyTime) {
+            $Triggers = New-ScheduledTaskTrigger -Daily -At $DailyTime
+        } else {
+            $Triggers = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours $IntervalHours)
+        }
+        $Action = New-ScheduledTaskAction -Execute $PythonExe -Argument "`"$ProjectDir\scripts\$Script`"" -WorkingDirectory $ProjectDir
+        $SettingArguments = @{
+            ExecutionTimeLimit = (New-TimeSpan -Minutes $TimeoutMinutes)
+            StartWhenAvailable = $true
+            Hidden = $true
+            MultipleInstances = 'IgnoreNew'
+        }
+        if ($Name -notin @('DidiPodcast-Watchdog', 'DidiPodcast-AudioServer')) {
+            $SettingArguments.RunOnlyIfNetworkAvailable = $true
+        }
+        $Settings = New-ScheduledTaskSettingsSet @SettingArguments
+        Register-ScheduledTask -TaskName $Name -Action $Action -Trigger $Triggers -Settings $Settings -Description $Description -RunLevel Highest -Force | Out-Null
+        Enable-ScheduledTask -TaskName $Name | Out-Null
+        $Registered = Get-ScheduledTask -TaskName $Name
+        if ($Registered.State -eq 'Disabled') { throw "Task remains disabled: $Name" }
+        Write-Host "Updated: $Name"
+    }
+
+    Register-DidiTask -Name 'DidiPodcast-SyncAudio' -Script 'sync-audio.py' -IntervalHours 4 -TimeoutMinutes 120 -Description 'Audio sync every 4 hours'
+    Register-DidiTask -Name 'DidiPodcast-Watchdog' -Script 'watchdog.py' -IntervalHours 1 -TimeoutMinutes 10 -Description 'Hourly task and audio delivery checks'
+    Register-DidiTask -Name 'DidiPodcast-AudioServer' -Script 'start-audio-server.py' -AtLogon -TimeoutMinutes 2 -Description 'Start local audio services at logon'
+    Register-DidiTask -Name 'podcast-audio-update' -Script 'sync-audio.py' -DailyTime '03:00' -TimeoutMinutes 120 -Description 'Daily audio sync'
+    Register-DidiTask -Name 'podcast-transcript-update' -Script 'run-transcripts.py' -DailyTime '05:00' -TimeoutMinutes 190 -Description 'Daily subtitle generation and translation'
+    exit 0
+} catch {
+    Write-Error $_ -ErrorAction Continue
     exit 1
 }
-Write-Host "  使用解释器: $PythonExe"
-
-function Register-DidiTask {
-    param($Name, $Script, $IntervalHours, $TimeoutMinutes, $Desc)
-    Unregister-ScheduledTask -TaskName $Name -Confirm:$false -ErrorAction SilentlyContinue
-    $Action   = New-ScheduledTaskAction -Execute $PythonExe -Argument "`"$ProjectDir\scripts\$Script`"" -WorkingDirectory $ProjectDir
-    $Trigger  = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Hours $IntervalHours) -Once -At (Get-Date)
-    $Settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes $TimeoutMinutes) -StartWhenAvailable -RunOnlyIfNetworkAvailable -Hidden
-    Register-ScheduledTask -TaskName $Name -Action $Action -Trigger $Trigger -Settings $Settings -Description $Desc -RunLevel Highest -Force | Out-Null
-    Write-Host "  已注册: $Name（每 $IntervalHours 小时）"
-}
-
-Write-Host "注册 DidiPodcast 任务计划..."
-Register-DidiTask "DidiPodcast-SyncAudio" "sync-audio.py"  4  120 "每4小时拉取新视频并下载音频"
-Register-DidiTask "DidiPodcast-Watchdog"  "watchdog.py"    1   10 "每小时巡检流程，自动修复异常"
-
-Write-Host ""
-Write-Host "完成。日志文件："
-Write-Host "  音频同步: $ProjectDir\audio-log.txt"
-Write-Host "  巡检记录: $ProjectDir\watchdog-log.txt"
-Write-Host ""
-Write-Host "立即测试巡检："
-Write-Host "  Start-ScheduledTask -TaskName 'DidiPodcast-Watchdog'"

@@ -58,3 +58,9 @@ transcript-err.txt
 # Python 缓存
 __pycache__/
 *.pyc
+
+# Validated media repairs retain the previous files outside the public server root.
+/.audio-repair-backups/
+/.media-repair/
+/test-results/
+/playwright-report/

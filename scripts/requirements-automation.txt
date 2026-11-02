@@ -1,0 +1,3 @@
+# Explicit upgrades only: scheduled runs never mutate their own dependencies.
+yt-dlp==2026.10.26
+requests==2.34.2

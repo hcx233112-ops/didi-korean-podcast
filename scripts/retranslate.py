@@ -6,6 +6,7 @@
 import json, sys, time, requests, os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from automation_common import atomic_json
 
 # 无控制台环境下 stdout/stderr 为 None，先容错再 reconfigure
 if sys.stdout is None:
@@ -26,12 +27,15 @@ def gtrans(text):
                 "https://translate.googleapis.com/translate_a/single",
                 params={"client": "dict-chrome-ex", "sl": "ko", "tl": "zh-CN", "dt": "t", "q": text},
                 headers={"User-Agent": "Mozilla/5.0"},
-                timeout=15,
+                timeout=(5, 20),
             )
             if r.status_code != 200:
                 raise Exception(f"HTTP {r.status_code}")
             data = r.json()
-            return "".join(seg[0] for seg in data[0] if seg[0])
+            translated = "".join(seg[0] for seg in data[0] if seg[0])
+            if not translated.strip():
+                raise ValueError("empty translation response")
+            return translated
         except Exception:
             if attempt == 2:
                 return None   # 网络/HTTP 失败：返回 None，下次再试
@@ -49,7 +53,7 @@ def translate_all(texts):
 
 def _pending(s):
     # zh 与 ko 相同、ko 非空、且未被标记为不可译
-    return s.get("zh", "") == s.get("ko", "") and s.get("ko", "").strip() and not s.get("nt")
+    return bool(s.get("ko", "").strip() and not s.get("nt") and (not s.get("zh", "").strip() or s.get("zh") == s.get("ko")))
 
 
 def needs_translation(segs):
@@ -61,43 +65,53 @@ def process_file(path, data):
     indices  = [i for i, s in enumerate(segs) if _pending(segs[i])]
     ko_texts = [segs[i]["ko"] for i in indices]
     zh_texts = translate_all(ko_texts)
+    if len(zh_texts) != len(indices):
+        raise ValueError("translation count mismatch")
+    translated = failed = 0
 
     for i, zh in zip(indices, zh_texts):
-        if zh is None:
+        if not zh:
+            failed += 1
             continue                    # 本次失败，保留原状下次再试
         if zh == segs[i]["ko"]:
             segs[i]["nt"] = 1           # 译文与原文一致 → 不可译，永久跳过
         else:
             segs[i]["zh"] = zh
+        translated += 1
 
-    path.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    atomic_json(path, data)
+    return translated, failed
 
 
 def main():
     files   = sorted(TRANSCRIPTS_DIR.glob("*.json"))
     total   = len(files)
-    done    = skipped = 0
+    done = skipped = failed_files = translated_segments = failed_segments = 0
 
     print(f"共 {total} 个文件，开始补翻译...\n", flush=True)
 
     for i, f in enumerate(files, 1):
-        data = json.loads(f.read_text(encoding="utf-8"))
-        segs = data.get("segments", [])
-        if not segs or not needs_translation(segs):
-            skipped += 1
-            continue
-
-        untrans = sum(1 for s in segs if _pending(s))
-        print(f"[{i}/{total}] {f.stem} ({untrans} 条)...", end=" ", flush=True)
         try:
-            process_file(f, data)
-            done += 1
-            print("完成", flush=True)
+            data = json.loads(f.read_text(encoding="utf-8"))
+            segs = data.get("segments", [])
+            if not segs or not needs_translation(segs):
+                skipped += 1
+                continue
+            translated, failed = process_file(f, data)
+            translated_segments += translated
+            failed_segments += failed
+            if failed:
+                failed_files += 1
+            else:
+                done += 1
+            print(f"[{i}/{total}] {f.stem}: 成功 {translated} 段，失败 {failed} 段", flush=True)
         except Exception as e:
+            failed_files += 1
             print(f"失败: {e}", flush=True)
 
-    print(f"\n完成 {done} 个，跳过 {skipped} 个", flush=True)
+    print(f"\n完成 {done} 个，跳过 {skipped} 个，失败 {failed_files} 个；翻译成功 {translated_segments} 段，失败 {failed_segments} 段", flush=True)
+    return 1 if failed_files else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

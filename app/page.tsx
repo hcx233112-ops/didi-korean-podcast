@@ -2,15 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import channelsData from '@/data/channels.json'
+import { usePodcastSync } from '@/hooks/use-podcast-sync'
+import { createProgressSaver, createTranscriptLoader, createPlaybackRequester, remainingTimerSeconds } from '@/lib/player-runtime'
 
 interface Channel { id: string; name: string; description: string; initial: string; color: string; channelId?: string; avatar?: string }
 interface Video { id: string; title: string; published: string; thumbnail: string; duration?: number }
 interface TranscriptSegment { start: number; end: number; ko: string; zh: string }
 interface ChannelVideos { channelName: string; videos: Video[] }
-interface SyncData {
-  favorites: string[]
-  progress: Record<string, { pos: number; dur: number }>
-}
 
 const DONE_THRESHOLD = 0.9
 
@@ -36,7 +34,15 @@ function ScrollPicker({ values, selected, onChange, label }: {
   }
   return (
     <div className="relative flex-1 select-none">
-      <div ref={ref} onScroll={handleScroll}
+      <div ref={ref} onScroll={handleScroll} role="spinbutton" tabIndex={0}
+        aria-label={label} aria-valuemin={values[0]} aria-valuemax={values[values.length - 1]} aria-valuenow={selected}
+        onKeyDown={e => {
+          if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(e.key)) return
+          e.preventDefault()
+          const index = e.key === 'Home' ? 0 : e.key === 'End' ? values.length - 1 : Math.max(0, Math.min(values.length - 1, values.indexOf(selected) + (e.key === 'ArrowDown' ? 1 : -1)))
+          onChange(values[index])
+          if (ref.current) ref.current.scrollTop = index * H
+        }}
         className="scroll-picker overflow-y-scroll"
         style={{ height: H * 5, scrollSnapType: 'y mandatory' }}>
         <div style={{ height: H * 2 }} />
@@ -84,7 +90,6 @@ const FILTERS: { key: FilterType; label: string }[] = [
   { key: 'inprogress', label: '进行中' },
   { key: 'done', label: '已听完' },
 ]
-const TRANSCRIPT_RANGE = 100
 
 export default function Home() {
   const [activeChannelId, setActiveChannelId] = useState(channels[0].id)
@@ -103,12 +108,9 @@ export default function Home() {
   const [transcriptSegs, setTranscriptSegs] = useState<TranscriptSegment[]>([])
   const [transcriptLoading, setTranscriptLoading] = useState(false)
   const [transcriptError, setTranscriptError] = useState<string | null>(null)
-  const [transcriptVideoId, setTranscriptVideoId] = useState<string | null>(null)
+  const [transcriptRetry, setTranscriptRetry] = useState(0)
   const [playbackRate, setPlaybackRate] = useState(1)
-  const [favorites, setFavorites] = useState<Set<string>>(new Set())
-  const [videoProgress, setVideoProgress] = useState<Record<string, number>>({})
   const [filter, setFilter] = useState<FilterType>('all')
-  const [videoDetails, setVideoDetails] = useState<Record<string, { pos: number; dur: number }>>({})
   const [closingSheet, setClosingSheet] = useState<SheetName | null>(null)
   const [stopAfterCurrent, setStopAfterCurrent] = useState(false)
   const [pickerHours, setPickerHours] = useState(0)
@@ -123,23 +125,35 @@ export default function Home() {
   const [searchActive, setSearchActive] = useState(false)
   // Pull-to-close
   const [pullY, setPullY] = useState(0)
+  const [listError, setListError] = useState<string | null>(null)
+  const [listRetry, setListRetry] = useState(0)
+  const [playbackError, setPlaybackError] = useState<string | null>(null)
+  const [showSyncSettings, setShowSyncSettings] = useState(false)
+  const [secretInput, setSecretInput] = useState('')
+  const [preferencesLoaded, setPreferencesLoaded] = useState(false)
+  const { favorites, videoProgress, videoDetails, saveProgress, resetProgress: clearSavedProgress, toggleFavorite: changeFavorite, getProgress, secret, status: syncStatus, configureSecret, syncNow } = usePodcastSync()
 
   const playerRef = useRef<HTMLAudioElement | null>(null)
   const audioElRef = useRef<HTMLAudioElement | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const syncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const deadlineRef = useRef<number | null>(null)
+  const blockAutoAdvanceRef = useRef(false)
+  const playbackRequesterRef = useRef(createPlaybackRequester(() => {
+    setPlaying(false); setPlaybackError('音频暂时无法播放，请检查网络后重试')
+  }))
+  const transcriptLoaderRef = useRef(createTranscriptLoader())
   const seekingRef = useRef(false)
   const transcriptListRef = useRef<HTMLDivElement>(null)
   const transcriptHeaderRef = useRef<HTMLDivElement>(null)
   const userScrollingRef = useRef(false)
+  const scrollIdleRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const savedPosRef = useRef(0)
   const currentIdRef = useRef<string | null>(null)
-  const lastProgressSaveRef = useRef(0)
-  const favoritesRef = useRef<Set<string>>(new Set())
+  const progressSaverRef = useRef(createProgressSaver(saveProgress))
   const stopAfterCurrentRef = useRef(false)
   const videosRef = useRef<Video[]>([])
-  const playFnRef = useRef<(v: Video) => void>(() => {})
+  const playFnRef = useRef<(v: Video, automatic?: boolean) => void>(() => {})
   const pullYRef = useRef(0)
 
   const activeChannel = channels.find(c => c.id === activeChannelId) ?? channels[0]
@@ -154,7 +168,6 @@ export default function Home() {
   }, [])
 
   // Keep refs current
-  useEffect(() => { favoritesRef.current = favorites }, [favorites])
   useEffect(() => { stopAfterCurrentRef.current = stopAfterCurrent }, [stopAfterCurrent])
   useEffect(() => { videosRef.current = channelVideos[activeChannelId] ?? [] }, [channelVideos, activeChannelId])
 
@@ -163,146 +176,59 @@ export default function Home() {
     setTimeout(() => { setter(false); setClosingSheet(null) }, 300)
   }
 
-  // ── Load videos ──
+  // Video requests are retryable and cancelled when the selected channel changes.
   useEffect(() => {
-    if (channelVideos[activeChannelId]) return
-    fetch(`/data/videos/${activeChannelId}.json`)
-      .then(r => r.json())
-      .then((data: ChannelVideos) => setChannelVideos(prev => ({ ...prev, [activeChannelId]: data.videos })))
-      .catch(console.error)
-  }, [activeChannelId])
-
-  // ── Load local preferences ──
-  useEffect(() => {
-    try {
-      const fav = localStorage.getItem('podcast-favorites')
-      if (fav) { const s = new Set<string>(JSON.parse(fav)); setFavorites(s); favoritesRef.current = s }
-      const trans = localStorage.getItem('podcast-translation')
-      if (trans !== null) setShowTranslation(trans === '1')
-      const speed = parseFloat(localStorage.getItem('podcast-speed') || '1')
-      if (SPEED_OPTIONS.includes(speed)) setPlaybackRate(speed)
-    } catch {}
-    const prog: Record<string, number> = {}
-    const details: Record<string, { pos: number; dur: number }> = {}
-    const loadedNotes: Record<string, string> = {}
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i)
-      if (key?.startsWith('podcast-pos-')) {
-        try {
-          const d = JSON.parse(localStorage.getItem(key)!)
-          if (d.pos > 0 && d.dur > 0) {
-            const id = key.replace('podcast-pos-', '')
-            prog[id] = d.pos / d.dur
-            details[id] = { pos: d.pos, dur: d.dur }
-          }
-        } catch {}
-      }
-      if (key?.startsWith('podcast-note-')) {
-        try {
-          const note = localStorage.getItem(key)
-          if (note) loadedNotes[key.replace('podcast-note-', '')] = note
-        } catch {}
-      }
-    }
-    setVideoProgress(prog)
-    setVideoDetails(details)
-    setNotes(loadedNotes)
-  }, [])
-
-  // ── Cloud sync: load on mount ──
-  useEffect(() => {
-    ;(async () => {
-      try {
-        const r = await fetch('/api/sync', { cache: 'no-store' })
-        if (!r.ok) return
-        const remote: SyncData | null = await r.json()
-        if (!remote) return
-        if (remote.favorites?.length) {
-          const local: string[] = JSON.parse(localStorage.getItem('podcast-favorites') || '[]')
-          const merged = [...new Set([...local, ...remote.favorites])]
-          localStorage.setItem('podcast-favorites', JSON.stringify(merged))
-          const s = new Set<string>(merged)
-          setFavorites(s)
-          favoritesRef.current = s
-        }
-        if (remote.progress) {
-          const progUpdates: Record<string, number> = {}
-          const detailUpdates: Record<string, { pos: number; dur: number }> = {}
-          for (const [id, rd] of Object.entries(remote.progress)) {
-            if (!rd?.dur) continue
-            const local = localStorage.getItem(`podcast-pos-${id}`)
-            const ld = local ? JSON.parse(local) : { pos: 0 }
-            if ((rd.pos || 0) > (ld.pos || 0)) {
-              localStorage.setItem(`podcast-pos-${id}`, JSON.stringify(rd))
-              progUpdates[id] = rd.pos / rd.dur
-              detailUpdates[id] = rd
-            }
-          }
-          if (Object.keys(progUpdates).length) {
-            setVideoProgress(prev => ({ ...prev, ...progUpdates }))
-            setVideoDetails(prev => ({ ...prev, ...detailUpdates }))
-          }
-        }
-      } catch {}
-    })()
-  }, [])
-
-  // ── Cloud sync: push ──
-  async function pushSync() {
-    const progress: Record<string, { pos: number; dur: number }> = {}
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i)
-      if (k?.startsWith('podcast-pos-')) {
-        try { progress[k.replace('podcast-pos-', '')] = JSON.parse(localStorage.getItem(k)!) } catch {}
-      }
-    }
-    try {
-      await fetch('/api/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ favorites: [...favoritesRef.current], progress }),
+    const controller = new AbortController()
+    setListError(null)
+    fetch(`/data/videos/${activeChannelId}.json`, { signal: controller.signal, cache: 'no-store' })
+      .then(r => { if (!r.ok) throw new Error('节目列表加载失败'); return r.json() })
+      .then((data: ChannelVideos) => {
+        if (!Array.isArray(data.videos)) throw new Error('节目列表格式异常')
+        if (!controller.signal.aborted) setChannelVideos(prev => ({ ...prev, [activeChannelId]: data.videos }))
       })
+      .catch(error => { if (error.name !== 'AbortError') setListError('节目列表加载失败，请检查网络后重试') })
+    return () => controller.abort()
+  }, [activeChannelId, listRetry])
+
+  useEffect(() => {
+    try {
+      setShowTranslation(localStorage.getItem('podcast-translation') === '1')
+      const speed = Number(localStorage.getItem('podcast-speed') || '1')
+      if (SPEED_OPTIONS.includes(speed)) setPlaybackRate(speed)
+      const loadedNotes: Record<string, string> = {}
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i)
+        if (key?.startsWith('podcast-note-')) loadedNotes[key.slice(13)] = localStorage.getItem(key) || ''
+      }
+      setNotes(loadedNotes)
     } catch {}
-  }
+    setPreferencesLoaded(true)
+  }, [])
 
-  function scheduleSync() {
-    if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current)
-    syncTimeoutRef.current = setTimeout(pushSync, 500)
-  }
-
-  useEffect(() => {
-    const id = setInterval(() => {
-      if (playerRef.current && !playerRef.current.paused) pushSync()
-    }, 5_000)
-    return () => clearInterval(id)
+  const persistCurrent = useCallback((force = false) => {
+    if (currentIdRef.current && playerRef.current) progressSaverRef.current(playerRef.current, currentIdRef.current, force)
   }, [])
 
   useEffect(() => {
+    if (!preferencesLoaded) return
     try { localStorage.setItem('podcast-translation', showTranslation ? '1' : '0') } catch {}
-  }, [showTranslation])
+  }, [showTranslation, preferencesLoaded])
 
   useEffect(() => {
+    if (!preferencesLoaded) return
     try { localStorage.setItem('podcast-speed', String(playbackRate)) } catch {}
-  }, [playbackRate])
-
-  const saveProgress = useCallback((id: string, cur: number, dur: number) => {
-    if (cur < 5 || dur <= 0) return
-    const data = { pos: Math.floor(cur), dur: Math.floor(dur) }
-    localStorage.setItem(`podcast-pos-${id}`, JSON.stringify(data))
-    setVideoProgress(prev => ({ ...prev, [id]: cur / dur }))
-    setVideoDetails(prev => ({ ...prev, [id]: data }))
-  }, [])
+  }, [playbackRate, preferencesLoaded])
 
   useEffect(() => {
     const onHide = () => {
-      if (document.visibilityState !== 'hidden') return
-      if (currentIdRef.current && playerRef.current)
-        try { saveProgress(currentIdRef.current, playerRef.current.currentTime || 0, playerRef.current.duration || 0) } catch {}
-      pushSync()
+      if (document.visibilityState === 'hidden') { persistCurrent(true); void syncNow(true) }
+      else { void syncNow(false, true); checkTimer() }
     }
+    const onPageHide = () => { persistCurrent(true); void syncNow(true) }
     document.addEventListener('visibilitychange', onHide)
-    return () => document.removeEventListener('visibilitychange', onHide)
-  }, [saveProgress])
+    window.addEventListener('pagehide', onPageHide)
+    return () => { document.removeEventListener('visibilitychange', onHide); window.removeEventListener('pagehide', onPageHide) }
+  }, [persistCurrent, syncNow])
 
   // ── Pull-to-close transcript: touchstart from header, move/end on document ──
   useEffect(() => {
@@ -343,10 +269,12 @@ export default function Home() {
     headerEl?.addEventListener('touchstart', onHeaderStart, { passive: true })
     document.addEventListener('touchmove', onDocMove, { passive: false })
     document.addEventListener('touchend', onDocEnd, { passive: true })
+    document.addEventListener('touchcancel', onDocEnd, { passive: true })
     return () => {
       headerEl?.removeEventListener('touchstart', onHeaderStart)
       document.removeEventListener('touchmove', onDocMove)
       document.removeEventListener('touchend', onDocEnd)
+      document.removeEventListener('touchcancel', onDocEnd)
     }
   }, [showTranscript])
 
@@ -370,22 +298,29 @@ export default function Home() {
             navigator.mediaSession.setPositionState({ duration: dur, position: Math.min(cur, dur), playbackRate: a.playbackRate })
           } catch {}
         }
-        if (currentIdRef.current && cur - lastProgressSaveRef.current >= 5) {
-          lastProgressSaveRef.current = cur
-          saveProgress(currentIdRef.current, cur, dur)
-        }
+        persistCurrent()
       } catch {}
     }, 1000)
-  }, [saveProgress])
+  }, [persistCurrent])
 
   function ensureAudio(): HTMLAudioElement {
     if (playerRef.current) return playerRef.current
     const a = audioElRef.current ?? new Audio()
     a.preload = 'auto'
-    a.addEventListener('play', () => setPlaying(true))
-    a.addEventListener('pause', () => setPlaying(false))
+    a.addEventListener('play', () => { if (!a.paused) setPlaying(true) })
+    a.addEventListener('pause', () => { if (a.paused) { setPlaying(false); persistCurrent(true); void syncNow(true) } })
+    a.addEventListener('timeupdate', () => { persistCurrent(); checkTimer() })
+    a.addEventListener('seeked', () => persistCurrent(true))
+    a.addEventListener('error', () => {
+      // A queued event from the previous resource can arrive after src changes.
+      // The media error is reset by resource selection; aborted loads are expected.
+      if (!a.error || a.error.code === 1 || (a.currentSrc && a.currentSrc !== a.src)) return
+      setPlaying(false); setPlaybackError('音频暂时无法播放，请检查网络后重试')
+    })
     a.addEventListener('ended', () => {
       if (currentIdRef.current && a.duration > 0) saveProgress(currentIdRef.current, a.duration, a.duration)
+      checkTimer()
+      if (blockAutoAdvanceRef.current) { setPlaying(false); return }
       if (stopAfterCurrentRef.current) {
         setStopAfterCurrent(false)
         setPlaying(false)
@@ -393,11 +328,11 @@ export default function Home() {
       }
       const vids = videosRef.current
       const idx = vids.findIndex(v => v.id === currentIdRef.current)
-      if (idx >= 0 && idx < vids.length - 1) playFnRef.current(vids[idx + 1])
+      if (idx >= 0 && idx < vids.length - 1) playFnRef.current(vids[idx + 1], true)
       else setPlaying(false)
     })
     a.addEventListener('loadedmetadata', () => {
-      if (savedPosRef.current > 5 && a.duration && savedPosRef.current < a.duration - 2)
+      if (savedPosRef.current > 0 && a.duration && savedPosRef.current < a.duration - 2)
         a.currentTime = savedPosRef.current
     })
     playerRef.current = a
@@ -412,10 +347,10 @@ export default function Home() {
       artwork: [{ src: video.thumbnail, sizes: '480x360', type: 'image/jpeg' }],
     })
     navigator.mediaSession.setActionHandler('play', () => {
-      playerRef.current?.play(); setPlaying(true)
-      navigator.mediaSession.playbackState = 'playing'
+      requestPlayback()
     })
     navigator.mediaSession.setActionHandler('pause', () => {
+      playbackRequesterRef.current.cancel()
       playerRef.current?.pause(); setPlaying(false)
       navigator.mediaSession.playbackState = 'paused'
     })
@@ -426,20 +361,21 @@ export default function Home() {
     })
   }
 
-  function play(video: Video) {
+  function play(video: Video, automatic = false) {
+    checkTimer()
+    if (automatic && blockAutoAdvanceRef.current) return
+    persistCurrent(true)
+    const a = ensureAudio()
+    playbackRequesterRef.current.cancel()
+    a.pause()
     currentIdRef.current = video.id
-    lastProgressSaveRef.current = 0
-    try {
-      const d = JSON.parse(localStorage.getItem(`podcast-pos-${video.id}`) || '{}')
-      savedPosRef.current = d.pos || 0
-    } catch { savedPosRef.current = 0 }
+    savedPosRef.current = getProgress(video.id)
+    setPlaybackError(null)
     setCurrent(video)
     setProgress(0); setElapsed(0); setDuration(0)
-    const a = ensureAudio()
     a.src = AUDIO_BASE + encodeURIComponent(video.id) + '.m4a'
     a.playbackRate = playbackRate
-    a.play().catch(() => {})
-    setPlaying(true)
+    requestPlayback(automatic)
     startPolling()
     setupMediaSession(video)
   }
@@ -447,8 +383,19 @@ export default function Home() {
   function togglePlay() {
     const a = playerRef.current
     if (!a) return
-    if (a.paused) { a.play().catch(() => {}); setPlaying(true) }
-    else { a.pause(); setPlaying(false) }
+    if (a.paused) requestPlayback()
+    else { playbackRequesterRef.current.cancel(); a.pause(); setPlaying(false) }
+  }
+
+  function requestPlayback(automatic = false) {
+    const audio = playerRef.current
+    if (!audio) return
+    checkTimer()
+    if (automatic && blockAutoAdvanceRef.current) return
+    // A user play action explicitly resumes after a completed sleep timer.
+    if (!automatic) blockAutoAdvanceRef.current = false
+    setPlaybackError(null)
+    void playbackRequesterRef.current.play(audio)
   }
 
   function skip(seconds: number) {
@@ -458,14 +405,15 @@ export default function Home() {
   }
 
   function onSeekChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const val = parseFloat(e.target.value)
-    setProgress(val); setElapsed(val * duration)
+    const value = Number(e.target.value)
+    const audio = playerRef.current
+    if (!audio || !Number.isFinite(audio.duration) || audio.duration <= 0) return
+    audio.currentTime = value * audio.duration
+    setProgress(value); setElapsed(audio.currentTime)
+    persistCurrent(true)
   }
 
-  function onSeekEnd() {
-    if (playerRef.current) playerRef.current.currentTime = progress * duration
-    seekingRef.current = false
-  }
+  function onSeekEnd() { seekingRef.current = false; persistCurrent(true) }
 
   function openTimerSheet() {
     const base = timerMinutes > 0 ? timerMinutes : 30
@@ -474,24 +422,39 @@ export default function Home() {
     setShowTimer(true)
   }
 
+  function checkTimer() {
+    if (deadlineRef.current === null) return
+    const remaining = remainingTimerSeconds(deadlineRef.current)
+    setTimeLeft(remaining)
+    if (remaining === 0) {
+      blockAutoAdvanceRef.current = true
+      playbackRequesterRef.current.cancel()
+      deadlineRef.current = null
+      if (timerRef.current) clearInterval(timerRef.current)
+      timerRef.current = null
+      playerRef.current?.pause()
+      persistCurrent(true)
+      setPlaying(false); setTimeLeft(null); setTimerMinutes(0)
+    }
+  }
+
   function startTimer(minutes: number) {
     setTimerMinutes(minutes)
     closeSheet('timer', setShowTimer)
     if (timerRef.current) clearInterval(timerRef.current)
-    if (minutes === 0) { setTimeLeft(null); return }
-    let remaining = minutes * 60
-    setTimeLeft(remaining)
-    timerRef.current = setInterval(() => {
-      remaining -= 1
-      setTimeLeft(remaining)
-      if (remaining <= 0) {
-        clearInterval(timerRef.current!)
-        playerRef.current?.pause()
-        setPlaying(false)
-        setTimeLeft(null); setTimerMinutes(0)
-      }
-    }, 1000)
+    deadlineRef.current = minutes > 0 ? Date.now() + minutes * 60_000 : null
+    if (!minutes) { setTimeLeft(null); return }
+    checkTimer()
+    timerRef.current = setInterval(checkTimer, 1000)
   }
+
+  useEffect(() => () => {
+    if (timerRef.current) clearInterval(timerRef.current)
+    if (pollRef.current) clearInterval(pollRef.current)
+    if (scrollIdleRef.current) clearTimeout(scrollIdleRef.current)
+    transcriptLoaderRef.current.cancel()
+    playbackRequesterRef.current.cancel()
+  }, [])
 
   function cycleSpeed() {
     const next = SPEED_OPTIONS[(SPEED_OPTIONS.indexOf(playbackRate) + 1) % SPEED_OPTIONS.length]
@@ -501,47 +464,49 @@ export default function Home() {
 
   function resetProgress(videoId: string, e: React.MouseEvent) {
     e.stopPropagation()
-    localStorage.removeItem(`podcast-pos-${videoId}`)
-    setVideoProgress(prev => { const n = { ...prev }; delete n[videoId]; return n })
-    setVideoDetails(prev => { const n = { ...prev }; delete n[videoId]; return n })
-    scheduleSync()
+    if (currentIdRef.current === videoId && playerRef.current) { playerRef.current.currentTime = 0; savedPosRef.current = 0 }
+    clearSavedProgress(videoId)
   }
 
   function toggleFavorite(videoId: string, e: React.MouseEvent) {
     e.stopPropagation()
-    setFavorites(prev => {
-      const next = new Set(prev)
-      next.has(videoId) ? next.delete(videoId) : next.add(videoId)
-      localStorage.setItem('podcast-favorites', JSON.stringify([...next]))
-      favoritesRef.current = next
-      scheduleSync()
-      return next
-    })
+    changeFavorite(videoId)
   }
 
   function saveNote(id: string, text: string) {
     const t = text.trim()
     if (t) {
       setNotes(prev => ({ ...prev, [id]: t }))
-      localStorage.setItem(`podcast-note-${id}`, t)
+      try { localStorage.setItem(`podcast-note-${id}`, t) } catch { setPlaybackError('备注保存失败，请检查浏览器存储空间') }
     } else {
       setNotes(prev => { const n = { ...prev }; delete n[id]; return n })
-      localStorage.removeItem(`podcast-note-${id}`)
+      try { localStorage.removeItem(`podcast-note-${id}`) } catch { setPlaybackError('备注删除失败，请检查浏览器存储权限') }
     }
   }
 
-  async function openTranscript(video: Video) {
+  function openTranscript(video: Video) {
+    if (currentIdRef.current !== video.id) play(video)
     setShowTranscript(true)
-    if (transcriptVideoId === video.id && transcriptSegs.length > 0) return
-    setTranscriptLoading(true); setTranscriptError(null)
-    setTranscriptSegs([]); setTranscriptVideoId(video.id)
-    try {
-      const res = await fetch(`/data/transcripts/${video.id}.json`)
-      if (!res.ok) throw new Error()
-      const data = await res.json()
-      data.segments?.length ? setTranscriptSegs(data.segments) : setTranscriptError('暂无字幕')
-    } catch { setTranscriptError('暂无字幕') }
-    finally { setTranscriptLoading(false) }
+  }
+
+  const subtitleId = current?.id
+  useEffect(() => {
+    if (!showTranscript || !subtitleId) return
+    let active = true
+    setTranscriptLoading(true); setTranscriptError(null); setTranscriptSegs([])
+    void transcriptLoaderRef.current.load(subtitleId).then(data => {
+      if (!active || !data) return
+      if (data.segments?.length) setTranscriptSegs(data.segments)
+      else setTranscriptError('暂无字幕')
+    }).catch(() => { if (active) setTranscriptError('字幕加载失败，请重试') })
+      .finally(() => { if (active) setTranscriptLoading(false) })
+    return () => { active = false; transcriptLoaderRef.current.cancel() }
+  }, [showTranscript, subtitleId, transcriptRetry])
+
+  function markTranscriptScrolling() {
+    userScrollingRef.current = true
+    if (scrollIdleRef.current) clearTimeout(scrollIdleRef.current)
+    scrollIdleRef.current = setTimeout(() => { userScrollingRef.current = false }, 3000)
   }
 
   const currentSegIdx = useMemo(() => {
@@ -554,20 +519,6 @@ export default function Home() {
     }
     return lo
   }, [transcriptSegs, elapsed])
-
-  const transcriptWindow = useMemo(() => {
-    const n = transcriptSegs.length
-    if (n <= TRANSCRIPT_RANGE * 2) {
-      return { items: transcriptSegs.map((seg, i) => ({ seg, i })), top: 0, bottom: 0 }
-    }
-    const lo = Math.max(0, currentSegIdx - TRANSCRIPT_RANGE)
-    const hi = Math.min(n - 1, currentSegIdx + TRANSCRIPT_RANGE)
-    return {
-      items: transcriptSegs.slice(lo, hi + 1).map((seg, j) => ({ seg, i: lo + j })),
-      top: lo,
-      bottom: n - hi - 1,
-    }
-  }, [transcriptSegs, currentSegIdx])
 
   useEffect(() => {
     if (!showTranscript || currentSegIdx < 0 || userScrollingRef.current) return
@@ -588,7 +539,7 @@ export default function Home() {
   })
 
   const filteredVideos = useMemo(() => videos.filter(v => {
-    if (searchQuery) return v.title.toLowerCase().includes(searchQuery.toLowerCase())
+    if (searchQuery.trim() && !v.title.toLowerCase().includes(searchQuery.trim().toLowerCase())) return false
     const p = videoProgress[v.id] ?? 0
     if (filter === 'all') return true
     if (filter === 'fav') return favorites.has(v.id)
@@ -619,6 +570,8 @@ export default function Home() {
           <div className="absolute left-0 top-3 bottom-3 w-[3px] rounded-r-full" style={{ background: ac }} />
         )}
         <div
+          role="button" tabIndex={0} aria-label={`播放 ${video.title}`}
+          onKeyDown={e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onPlay(video) } }}
           onClick={() => onPlay(video)}
           className="flex items-center gap-3.5 px-5 py-3.5 cursor-pointer active:opacity-60 transition-opacity"
           style={{ background: isActive ? `${ac}12` : 'transparent' }}
@@ -708,6 +661,7 @@ export default function Home() {
         </div>
 
         <button
+          aria-label={isFav ? `取消收藏 ${video.title}` : `收藏 ${video.title}`} aria-pressed={isFav}
           onClick={(e) => onToggleFav(video.id, e)}
           className="absolute right-3 top-1/2 -translate-y-1/2 p-2.5 active:scale-90 transition-transform">
           <svg width="17" height="17" viewBox="0 0 24 24"
@@ -764,11 +718,16 @@ export default function Home() {
             )}
           </div>
 
+          <div className="flex items-center gap-2 mt-3">
+            <button className="text-xs underline" onClick={() => { setSecretInput(secret); setShowSyncSettings(true) }}>云同步设置</button>
+            <span className="text-xs" role="status" style={{ color: 'var(--text-secondary)' }}>{syncStatus}</span>
+          </div>
           {/* Filter tabs / Search */}
           {searchActive ? (
             <div className="flex items-center gap-2 mt-3">
               <input
                 autoFocus
+                aria-label="搜索节目标题"
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
                 placeholder="搜索节目…"
@@ -794,7 +753,7 @@ export default function Home() {
                   {f.key === 'fav' ? '♥ 收藏' : f.label}
                 </button>
               ))}
-              <button onClick={() => setSearchActive(true)}
+              <button aria-label="搜索节目" onClick={() => setSearchActive(true)}
                 className="ml-auto flex-shrink-0 p-1.5 rounded-full active:opacity-50"
                 style={{ background: 'var(--bg-raised)' }}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-tertiary)" strokeWidth="2.5">
@@ -807,10 +766,13 @@ export default function Home() {
 
         <div className="h-px" style={{ background: 'var(--separator)' }} />
 
+        {listError && <div role="alert" className="px-5 py-4 text-sm"><p>{listError}</p><button className="underline mt-2" onClick={() => setListRetry(value => value + 1)}>重试加载</button></div>}
+        {playbackError && <div role="alert" className="px-5 py-3 text-sm"><p>{playbackError}</p><button className="underline mt-2" onClick={() => current && play(current)}>重试播放</button></div>}
+
         {filteredVideos.length === 0 && (
           <div className="px-5 py-12 text-center">
             <p className="text-sm" style={{ color: 'var(--text-tertiary)' }}>
-              {videos.length === 0 ? '加载中…' :
+              {videos.length === 0 ? (listError ? '暂时无法加载节目' : '加载中…') :
                searchQuery ? `没有找到「${searchQuery}」` :
                filter === 'fav' ? '还没有收藏的节目' :
                filter === 'inprogress' ? '没有进行中的节目' :
@@ -826,6 +788,24 @@ export default function Home() {
 
         {current && <div className="h-28" />}
       </div>
+
+      {showSyncSettings && (
+        <div className="fixed inset-0 flex items-end justify-center bg-black/50 px-4 pb-6" style={{ zIndex: 90 }} onClick={() => setShowSyncSettings(false)}>
+          <section role="dialog" aria-modal="true" aria-labelledby="sync-title" className="w-full max-w-lg rounded-3xl p-5" style={{ background: 'var(--bg-card)' }} onClick={e => e.stopPropagation()} onKeyDown={e => { if (e.key === 'Escape') setShowSyncSettings(false) }}>
+            <h2 id="sync-title" className="font-semibold">云同步</h2>
+            <p className="text-sm mt-2" style={{ color: 'var(--text-secondary)' }}>输入你设置的同步密钥。其他设备使用同一密钥，收藏和收听进度即可同步。备注保存在当前设备。</p>
+            <label htmlFor="sync-secret" className="block text-sm mt-4">同步密钥（至少 32 个字符）</label>
+            <input id="sync-secret" autoFocus type="password" autoComplete="off" spellCheck={false} value={secretInput} onChange={e => setSecretInput(e.target.value)} className="w-full rounded-xl border p-3 mt-2" style={{ borderColor: 'var(--separator)', background: 'var(--bg-raised)' }} />
+            <p role="status" className="text-sm mt-3">{syncStatus}</p>
+            <div className="flex flex-wrap gap-3 mt-4">
+              <button className="rounded-xl px-4 py-2 font-medium" style={{ background: ac, color: '#fff' }} onClick={() => { configureSecret(secretInput) }}>保存并同步</button>
+              {secret && <button className="rounded-xl border px-4 py-2" onClick={() => { void syncNow(false, true) }}>重试同步</button>}
+              <button className="rounded-xl border px-4 py-2" onClick={() => { configureSecret(''); setSecretInput('') }}>仅本地使用</button>
+              <button className="px-4 py-2" onClick={() => setShowSyncSettings(false)}>关闭</button>
+            </div>
+          </section>
+        </div>
+      )}
 
       {/* ── Channel picker sheet ── */}
       {showChannelPicker && (
@@ -916,6 +896,7 @@ export default function Home() {
             <div className="w-9 h-1 rounded-full mx-auto mb-5" style={{ background: 'var(--separator)' }} />
             <p className="text-[17px] font-semibold mb-3" style={{ color: 'var(--text-primary)' }}>备注</p>
             <textarea
+              aria-label="节目备注"
               value={noteText}
               onChange={e => setNoteText(e.target.value)}
               placeholder="添加备注…"
@@ -960,15 +941,15 @@ export default function Home() {
           <div className="relative h-[2px]" style={{ background: 'var(--separator)' }}>
             <div className="absolute inset-y-0 left-0" style={{ width: filled, background: ac }} />
             <input type="range" min="0" max="1" step="0.001" value={progress}
-              onMouseDown={() => { seekingRef.current = true }}
-              onTouchStart={() => { seekingRef.current = true }}
-              onChange={onSeekChange} onMouseUp={onSeekEnd} onTouchEnd={onSeekEnd}
+              aria-label="播放进度"
+              onPointerDown={e => { seekingRef.current = true; e.currentTarget.setPointerCapture(e.pointerId) }}
+              onChange={onSeekChange} onPointerUp={onSeekEnd} onPointerCancel={onSeekEnd} onLostPointerCapture={onSeekEnd}
               className="absolute w-full opacity-0 cursor-pointer"
               style={{ height: 16, top: -7 }} />
           </div>
 
           <div className="flex items-center gap-3 px-4 pt-3 pb-2.5">
-            <button onClick={() => current && openTranscript(current)}
+            <button aria-label="打开当前节目字幕" onClick={() => current && openTranscript(current)}
               className="flex items-center gap-3 flex-1 min-w-0 text-left active:opacity-70">
               <img src={current.thumbnail} alt=""
                 className="w-[42px] h-[42px] rounded-xl object-cover flex-shrink-0 shadow"
@@ -989,13 +970,13 @@ export default function Home() {
               </div>
             </button>
             <div className="flex items-center gap-2.5 flex-shrink-0">
-              <button onClick={() => skip(-15)} className="active:opacity-50 p-1" style={{ color: 'var(--text-secondary)' }}>
+              <button aria-label="后退 15 秒" onClick={() => skip(-15)} className="active:opacity-50 p-1" style={{ color: 'var(--text-secondary)' }}>
                 <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/>
                   <text x="8" y="15" fontSize="5" fill="currentColor" fontWeight="bold">15</text>
                 </svg>
               </button>
-              <button onClick={togglePlay} className="active:scale-90 transition-transform duration-100">
+              <button aria-label={playing ? '暂停播放' : '开始播放'} onClick={togglePlay} className="active:scale-90 transition-transform duration-100">
                 <div className="w-[42px] h-[42px] rounded-full flex items-center justify-center shadow"
                   style={{ background: ac }}>
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="white">
@@ -1005,13 +986,13 @@ export default function Home() {
                   </svg>
                 </div>
               </button>
-              <button onClick={() => skip(15)} className="active:opacity-50 p-1" style={{ color: 'var(--text-secondary)' }}>
+              <button aria-label="前进 15 秒" onClick={() => skip(15)} className="active:opacity-50 p-1" style={{ color: 'var(--text-secondary)' }}>
                 <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M12 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6h2c0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8z"/>
                   <text x="8" y="15" fontSize="5" fill="currentColor" fontWeight="bold">15</text>
                 </svg>
               </button>
-              <button onClick={openTimerSheet} className="active:opacity-50 p-1">
+              <button aria-label="定时停止播放" onClick={openTimerSheet} className="active:opacity-50 p-1">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
                   stroke={timerMinutes > 0 || stopAfterCurrent ? ac : 'var(--text-tertiary)'} strokeWidth="2">
                   <circle cx="12" cy="13" r="8"/>
@@ -1069,7 +1050,7 @@ export default function Home() {
             style={{ background: 'var(--bg-raised)', borderBottom: '1px solid var(--separator)' }}>
             <img src={current.thumbnail} alt="" className="w-8 h-8 rounded-lg object-cover flex-shrink-0" />
             <p className="text-[12px] truncate flex-1 font-medium" style={{ color: 'var(--text-secondary)' }}>{current.title}</p>
-            <button onClick={() => {
+            <button aria-label="编辑当前节目备注" onClick={() => {
               setNoteVideoId(current.id)
               setNoteText(notes[current.id] || '')
               setShowNote(true)
@@ -1080,10 +1061,10 @@ export default function Home() {
                 <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
               </svg>
             </button>
-            <button onClick={cycleSpeed} className="active:opacity-60 flex-shrink-0">
+            <button aria-label={`播放速度 ${playbackRate} 倍，点击切换`} onClick={cycleSpeed} className="active:opacity-60 flex-shrink-0">
               <span className="text-[12px] font-bold" style={{ color: ac }}>{playbackRate}x</span>
             </button>
-            <button onClick={togglePlay} className="active:scale-90 transition-transform flex-shrink-0">
+            <button aria-label={playing ? '暂停播放' : '开始播放'} onClick={togglePlay} className="active:scale-90 transition-transform flex-shrink-0">
               <div className="w-7 h-7 rounded-full flex items-center justify-center" style={{ background: ac }}>
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="white">
                   {playing
@@ -1096,12 +1077,12 @@ export default function Home() {
 
           {/* Transcript list */}
           <div ref={transcriptListRef} className="flex-1 overflow-y-auto py-3"
+            onWheel={markTranscriptScrolling}
             onTouchStart={() => { userScrollingRef.current = true }}
-            onTouchEnd={() => { setTimeout(() => { userScrollingRef.current = false }, 3000) }}>
+            onTouchEnd={markTranscriptScrolling}>
             {transcriptLoading && <p className="text-center py-20 text-sm" style={{ color: 'var(--text-tertiary)' }}>加载字幕中…</p>}
-            {transcriptError && <p className="text-center py-20 text-sm" style={{ color: 'var(--text-tertiary)' }}>{transcriptError}</p>}
-            <div style={{ height: transcriptWindow.top * 48 }} />
-            {transcriptWindow.items.map(({ seg, i }) => {
+            {transcriptError && <div className="text-center py-12 text-sm" role="status"><p>{transcriptError}</p><button className="underline mt-3" onClick={() => setTranscriptRetry(value => value + 1)}>重新加载字幕</button></div>}
+            {transcriptSegs.map((seg, i) => {
               const isActiveSeg = i === currentSegIdx
               return (
                 <button id={`seg-${i}`} key={i}
@@ -1109,9 +1090,10 @@ export default function Home() {
                     const a = playerRef.current
                     if (!a) return
                     a.currentTime = seg.start
-                    if (a.paused) { a.play().catch(() => {}); setPlaying(true) }
+                    if (a.paused) requestPlayback()
                   }}
-                  className="w-full text-left px-5 py-2.5 active:opacity-60">
+                  className="w-full text-left px-5 py-2.5 active:opacity-60"
+                  style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 72px' }}>
                   {isActiveSeg && <div className="w-5 h-[2px] rounded-full mb-2" style={{ background: ac }} />}
                   <p style={{
                     color: isActiveSeg ? 'var(--text-primary)' : 'var(--text-tertiary)',
@@ -1134,7 +1116,6 @@ export default function Home() {
                 </button>
               )
             })}
-            <div style={{ height: transcriptWindow.bottom * 48 }} />
             <div className="h-24" />
           </div>
 
@@ -1152,9 +1133,9 @@ export default function Home() {
               <div className="flex-1 relative h-[3px] rounded-full" style={{ background: 'var(--separator)' }}>
                 <div className="absolute inset-y-0 left-0 rounded-full" style={{ width: filled, background: ac }} />
                 <input type="range" min="0" max="1" step="0.001" value={progress}
-                  onMouseDown={() => { seekingRef.current = true }}
-                  onTouchStart={() => { seekingRef.current = true }}
-                  onChange={onSeekChange} onMouseUp={onSeekEnd} onTouchEnd={onSeekEnd}
+                  aria-label="播放进度"
+                  onPointerDown={e => { seekingRef.current = true; e.currentTarget.setPointerCapture(e.pointerId) }}
+                  onChange={onSeekChange} onPointerUp={onSeekEnd} onPointerCancel={onSeekEnd} onLostPointerCapture={onSeekEnd}
                   className="absolute w-full opacity-0 cursor-pointer"
                   style={{ height: 20, top: -9 }} />
               </div>
@@ -1162,13 +1143,13 @@ export default function Home() {
             </div>
             {/* Play controls: -15 | play | +15 centered, timer absolutely right */}
             <div className="relative flex items-center justify-center gap-10">
-              <button onClick={() => skip(-15)} className="active:opacity-50" style={{ color: 'var(--text-secondary)' }}>
+              <button aria-label="后退 15 秒" onClick={() => skip(-15)} className="active:opacity-50" style={{ color: 'var(--text-secondary)' }}>
                 <svg width="30" height="30" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/>
                   <text x="8" y="15" fontSize="5" fill="currentColor" fontWeight="bold">15</text>
                 </svg>
               </button>
-              <button onClick={togglePlay} className="active:scale-90 transition-transform duration-100">
+              <button aria-label={playing ? '暂停播放' : '开始播放'} onClick={togglePlay} className="active:scale-90 transition-transform duration-100">
                 <div className="w-[54px] h-[54px] rounded-full flex items-center justify-center shadow-md" style={{ background: ac }}>
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="white">
                     {playing
@@ -1177,13 +1158,13 @@ export default function Home() {
                   </svg>
                 </div>
               </button>
-              <button onClick={() => skip(15)} className="active:opacity-50" style={{ color: 'var(--text-secondary)' }}>
+              <button aria-label="前进 15 秒" onClick={() => skip(15)} className="active:opacity-50" style={{ color: 'var(--text-secondary)' }}>
                 <svg width="30" height="30" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M12 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6h2c0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8z"/>
                   <text x="8" y="15" fontSize="5" fill="currentColor" fontWeight="bold">15</text>
                 </svg>
               </button>
-              <button onClick={openTimerSheet} className="absolute right-0 active:opacity-50 p-2">
+              <button aria-label="定时停止播放" onClick={openTimerSheet} className="absolute right-0 active:opacity-50 p-2">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none"
                   stroke={timerMinutes > 0 || stopAfterCurrent ? ac : 'var(--text-secondary)'} strokeWidth="2">
                   <circle cx="12" cy="13" r="8"/>

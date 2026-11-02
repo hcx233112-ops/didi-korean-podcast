@@ -1,234 +1,240 @@
 #!/usr/bin/env python3
-"""
-自动巡检脚本，每小时由 Task Scheduler 调用。
-发现问题 → 能修就修，修不了就弹 Windows 系统通知。
-"""
-
-import json, sys, subprocess, shutil, time, re, os
-from datetime import datetime, timedelta
+"""Inspect task state, completed work and actual Range delivery. No false repair claims."""
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+import urllib.request
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from automation_common import NO_WINDOW, ProcessLock, read_json, write_status
+from audio_validation import AudioValidator
 
-# pythonw 无控制台环境下 stdout/stderr 为 None，先容错再 reconfigure
-if sys.stdout is None:
-    sys.stdout = open(os.devnull, "w", encoding="utf-8")
-if sys.stderr is None:
-    sys.stderr = open(os.devnull, "w", encoding="utf-8")
-sys.stdout.reconfigure(encoding="utf-8")
-sys.stderr.reconfigure(encoding="utf-8")
-
-ROOT         = ROOT = Path(__file__).parent.parent
-AUDIO_DIR    = ROOT / "audio"
+ROOT = Path(__file__).resolve().parent.parent
+AUDIO_DIR = ROOT / "audio"
 CHANNELS_DIR = ROOT / "public" / "data" / "videos"
-LOG_FILE     = ROOT / "audio-log.txt"
+LOG_FILE = ROOT / "audio-log.txt"
 WATCHDOG_LOG = ROOT / "watchdog-log.txt"
-SYNC_SCRIPT  = ROOT / "scripts" / "sync-audio.py"
-TASK_NAME    = "DidiPodcast-SyncAudio"
-
-MAX_SYNC_GAP_HOURS  = 5   # 超过多久没同步视为异常
-MIN_SYNC_GAP_HOURS  = 1   # 距上次同步不足此时间则不重复触发
-RECENT_DAYS         = 14  # 检查最近多少天的视频
-MIN_AUDIO_BYTES     = 50 * 1024
+SYNC_SCRIPT = ROOT / "scripts" / "sync-audio.py"
+TASK_NAMES = ["DidiPodcast-SyncAudio", "DidiPodcast-Watchdog", "DidiPodcast-AudioServer", "podcast-audio-update", "podcast-transcript-update"]
 
 
-# ── 日志（轮转只在启动时做一次）─────────────────────────────────────────
-
-def _rotate(file: Path, max_lines=500):
-    if not file.exists():
-        return
-    try:
-        lines = file.read_text(encoding="utf-8", errors="replace").splitlines()
-        if len(lines) > max_lines:
-            file.write_text("\n".join(lines[-(max_lines // 2):]) + "\n", encoding="utf-8")
-    except Exception:
-        pass
+def log(message):
+    line = f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {message}"
+    if sys.stdout:
+        print(line, flush=True)
+    with WATCHDOG_LOG.open("a", encoding="utf-8") as stream:
+        stream.write(line + "\n")
 
 
-def log(msg: str):
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    line = f"[{ts}] {msg}"
-    print(line)
-    try:
-        with open(WATCHDOG_LOG, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-    except Exception:
-        pass
-
-
-# ── Windows 通知 ──────────────────────────────────────────────────────────
-
-def notify(title: str, body: str):
-    # 转义单引号，避免 PowerShell 字符串被截断
-    t = title.replace("'", "''")
-    b = body.replace("'", "''")
-    ps = f"""
-Add-Type -AssemblyName System.Windows.Forms
+def notify(title, body):
+    title, body = title.replace("'", "''"), body.replace("'", "''")
+    script = f"""Add-Type -AssemblyName System.Windows.Forms
 $n = New-Object System.Windows.Forms.NotifyIcon
 $n.Icon = [System.Drawing.SystemIcons]::Warning
 $n.Visible = $true
-$n.ShowBalloonTip(8000, '{t}', '{b}', [System.Windows.Forms.ToolTipIcon]::Warning)
+$n.ShowBalloonTip(8000, '{title}', '{body}', [System.Windows.Forms.ToolTipIcon]::Warning)
 Start-Sleep -Seconds 9
 $n.Dispose()
 """
-    try:
-        subprocess.Popen(
-            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps],
-            creationflags=0x08000000,
-        )
-    except Exception as e:
-        log(f"通知发送失败: {e}")
+    subprocess.Popen(["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", script], creationflags=NO_WINDOW)
 
 
-# ── 解析 audio-log.txt ────────────────────────────────────────────────────
-
-def parse_last_sync() -> tuple[datetime | None, bool]:
-    """返回 (上次完成时间, 上次是否有下载失败)。"""
+def parse_last_sync():
+    """Legacy log fallback, including failures after the last completed attempt."""
     if not LOG_FILE.exists():
-        return None, False
-
-    lines = LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
-    last_done_time = None
-    had_failure    = False
-
-    for line in reversed(lines):
-        m = re.match(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]', line)
-        if not m:
+        return None, True
+    last_done = None
+    failed = False
+    for line in reversed(LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines()):
+        match = re.match(r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]", line)
+        if not match:
             continue
-        ts = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
-
-        if "===== 完成 =====" in line and last_done_time is None:
-            last_done_time = ts
-        if last_done_time and "失败:" in line and "失败: 0" not in line:
-            had_failure = True
-        if last_done_time and "===== sync-audio 开始 =====" in line:
+        if "失败" in line and "失败: 0" not in line:
+            failed = True
+        if "===== 完成 =====" in line and last_done is None:
+            last_done = datetime.strptime(match[1], "%Y-%m-%d %H:%M:%S")
+        if last_done and "===== sync-audio 开始 =====" in line:
             break
-
-    return last_done_time, had_failure
-
-
-# ── 检查近期视频音频 ──────────────────────────────────────────────────────
-
-def find_recent_missing() -> list[dict]:
-    cutoff = (datetime.now() - timedelta(days=RECENT_DAYS)).strftime("%Y-%m-%d")
-    missing = []
-    for f in CHANNELS_DIR.glob("*.json"):
-        data = json.loads(f.read_text(encoding="utf-8"))
-        for v in data.get("videos", []):
-            if v.get("published", "") >= cutoff:
-                p = AUDIO_DIR / f"{v['id']}.m4a"
-                if not p.exists() or p.stat().st_size < MIN_AUDIO_BYTES:
-                    missing.append(v)
-    return missing
+    return last_done, failed
 
 
-# ── Task Scheduler ────────────────────────────────────────────────────────
-
-def task_exists(name: str) -> bool:
-    r = subprocess.run(
-        ["powershell", "-NoProfile", "-Command",
-         f"(Get-ScheduledTask -TaskName '{name}' -ErrorAction SilentlyContinue) -ne $null"],
-        capture_output=True, text=True,
-        creationflags=0x08000000,  # CREATE_NO_WINDOW：pythonw 下不弹控制台
-    )
-    return r.stdout.strip() == "True"
-
-
-def try_reregister_tasks():
-    setup_ps1 = ROOT / "scripts" / "setup-scheduler.ps1"
-    r = subprocess.run(
-        ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(setup_ps1)],
-        capture_output=True, text=True,
-        creationflags=0x08000000,  # CREATE_NO_WINDOW
-    )
-    if r.returncode == 0:
-        log("✅ 任务重新注册成功")
-        return True
-    log(f"❌ 重新注册失败（需要管理员权限）: {r.stderr.strip()[:100]}")
-    return False
+def task_states():
+    names = ",".join("'" + name + "'" for name in TASK_NAMES)
+    script = """$ErrorActionPreference='Stop'; @(%s) | ForEach-Object {
+ $name=$_; $task=Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+ if ($null -eq $task) { [pscustomobject]@{name=$name;exists=$false;enabled=$false} }
+ else { $info=$task|Get-ScheduledTaskInfo; [pscustomobject]@{name=$name;exists=$true;enabled=($task.State -ne 'Disabled' -and $task.Settings.Enabled);state=[string]$task.State;last_result=$info.LastTaskResult;last_run=$info.LastRunTime.ToString('o')} }
+} | ConvertTo-Json -Compress""" % names
+    result = subprocess.run(["powershell", "-NoProfile", "-Command", script], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, creationflags=NO_WINDOW)
+    if result.returncode:
+        raise RuntimeError(f"无法读取任务计划: {result.stderr[-300:]}")
+    data = json.loads(result.stdout.lstrip("\ufeff"))
+    return {row["name"]: row for row in (data if isinstance(data, list) else [data])}
 
 
-# ── 触发同步 ──────────────────────────────────────────────────────────────
+def configure_tasks():
+    result = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "scripts" / "setup-scheduler.ps1")], capture_output=True, text=True, timeout=60, creationflags=NO_WINDOW)
+    return result.returncode == 0
+
+
+def video_list():
+    videos = []
+    for path in CHANNELS_DIR.glob("*.json"):
+        videos.extend(json.loads(path.read_text(encoding="utf-8")).get("videos", []))
+    return videos
+
+
+def probe_audio(base, video_id):
+    request = urllib.request.Request(base.rstrip("/") + "/" + video_id + ".m4a", headers={"Range": "bytes=0-100", "User-Agent": "DidiPodcast-Healthcheck/1.0"})
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            return response.status == 206 and response.headers.get("Content-Range", "").startswith("bytes 0-100/") and len(response.read(102)) == 101
+    except (OSError, ValueError):
+        return False
+
+
+def public_base():
+    value = os.environ.get("NEXT_PUBLIC_AUDIO_BASE", "")
+    if not value:
+        env = ROOT / ".env.production"
+        if env.exists():
+            for line in env.read_text(encoding="utf-8").splitlines():
+                if line.startswith("NEXT_PUBLIC_AUDIO_BASE="):
+                    value = line.split("=", 1)[1].strip().strip('"\'')
+    return value
+
+
+def recover_services():
+    result = subprocess.run([sys.executable, str(ROOT / "scripts" / "start-audio-server.py")], cwd=ROOT, capture_output=True, timeout=30, creationflags=NO_WINDOW)
+    return result.returncode == 0
+
 
 def run_sync_now():
-    log("触发 sync-audio.py...")
-    subprocess.Popen(
-        [sys.executable, str(SYNC_SCRIPT)],
-        cwd=str(ROOT),
-        creationflags=0x08000000,
-    )
+    subprocess.Popen([sys.executable, str(SYNC_SCRIPT)], cwd=ROOT, creationflags=NO_WINDOW)
+    log("已请求音频补跑，结果待后续巡检确认")
 
 
-# ── 主巡检逻辑 ────────────────────────────────────────────────────────────
+def age_hours(timestamp):
+    try:
+        value = datetime.fromisoformat(timestamp)
+        if value.tzinfo is None:
+            value = value.astimezone()
+        return (datetime.now(timezone.utc) - value).total_seconds() / 3600
+    except (TypeError, ValueError):
+        return float("inf")
+
 
 def main():
-    _rotate(WATCHDOG_LOG)
-    log("===== watchdog 检查 =====")
+    lock = ProcessLock(ROOT / "logs" / "watchdog-lock.log")
+    if not lock.acquire():
+        return 0
+    issues, recovered, pending = [], [], []
+    try:
+        if WATCHDOG_LOG.exists() and WATCHDOG_LOG.stat().st_size > 150000:
+            lines = WATCHDOG_LOG.read_text(encoding="utf-8", errors="replace").splitlines()
+            WATCHDOG_LOG.write_text("\n".join(lines[-500:]) + "\n", encoding="utf-8")
+        log("===== watchdog 检查 =====")
+        states = task_states()
+        bad_tasks = [name for name in TASK_NAMES if not states.get(name, {}).get("exists") or not states.get(name, {}).get("enabled")]
+        if bad_tasks:
+            configure_tasks()
+            states = task_states()  # The registration exit code alone is insufficient.
+            remaining = [name for name in bad_tasks if not states.get(name, {}).get("exists") or not states.get(name, {}).get("enabled")]
+            if remaining:
+                issues.append("任务缺失或禁用: " + ", ".join(remaining))
+            else:
+                recovered.append("已验证任务恢复启用")
+        for name, state in states.items():
+            if state.get("last_result", 0) not in (0, 267009, 267011) and state.get("state") != "Running":
+                issues.append(f"{name} 最近退出码 {state['last_result']}")
 
-    issues = []
-    fixes  = []
-    sync_triggered = False
-
-    # 1. Task Scheduler 任务检查
-    for name in [TASK_NAME, "DidiPodcast-Watchdog"]:
-        if not task_exists(name):
-            issues.append(f"任务丢失: {name}")
-            log(f"⚠️  {name} 不存在，尝试重新注册...")
-            if try_reregister_tasks():
-                fixes.append("任务已重新注册")
-            break  # 两个任务用同一个 setup 脚本，注册一次即可
-
-    # 2. 上次同步时间检查
-    last_sync, had_failure = parse_last_sync()
-    now = datetime.now()
-
-    if last_sync is None:
-        issues.append("从未运行过 sync-audio")
-        log("⚠️  未找到同步记录，立即触发")
-        run_sync_now()
-        fixes.append("已触发首次同步")
-        sync_triggered = True
-    else:
-        gap_hours = (now - last_sync).total_seconds() / 3600
-        log(f"上次同步: {last_sync.strftime('%Y-%m-%d %H:%M')}（{gap_hours:.1f}h 前），有下载失败: {had_failure}")
-
-        if gap_hours > MAX_SYNC_GAP_HOURS:
-            issues.append(f"同步停滞 {gap_hours:.0f} 小时")
-            log(f"⚠️  超过 {MAX_SYNC_GAP_HOURS}h 未同步，立即触发")
-            run_sync_now()
-            fixes.append("已触发补跑同步")
-            sync_triggered = True
-        elif had_failure and gap_hours > MIN_SYNC_GAP_HOURS:
-            issues.append("上次同步有下载失败")
-            log("⚠️  上次有失败，触发重试")
-            run_sync_now()
-            fixes.append("已触发失败重试")
-            sync_triggered = True
-
-    # 3. 近期音频缺失检查
-    # 只在上次同步超过 1h 且本次未触发过时才检查，避免直播/首映反复触发
-    if not sync_triggered and last_sync is not None:
-        gap_hours = (now - last_sync).total_seconds() / 3600
-        if gap_hours > MIN_SYNC_GAP_HOURS:
-            missing = find_recent_missing()
-            if missing:
-                names = "、".join(v["title"][:15] for v in missing[:3])
-                log(f"⚠️  {len(missing)} 个近期视频缺少音频: {names}")
-                issues.append(f"{len(missing)} 个近期视频无音频")
-                run_sync_now()
-                fixes.append("已触发补下载")
-                sync_triggered = True
-
-    # 4. 汇总
-    if issues:
-        log(f"问题: {'; '.join(issues)}")
-        if fixes:
-            log(f"已处理: {'; '.join(fixes)}")
+        audio = read_json(ROOT / "logs" / "audio-status.log")
+        retry_audio = False
+        if audio:
+            age = age_hours(audio.get("updated_at"))
+            if audio.get("status") == "running" and age <= 2:
+                pending.append("音频同步仍在执行")
+            elif audio.get("status") in ("failed", "pending") or (audio.get("status") == "running" and age > 2) or age > 5:
+                issues.append(f"音频同步状态异常或过期: {audio.get('status')}")
+                retry_audio = True
         else:
-            log(f"⚠️  无法自动修复: {'; '.join(issues)}")
-    else:
-        log("✅ 一切正常")
+            last, failed = parse_last_sync()
+            if last is None or failed or (datetime.now() - last).total_seconds() > 5 * 3600:
+                issues.append("音频同步缺少近期成功记录")
+                retry_audio = True
 
-    log("===== 完成 =====\n")
+        transcript = read_json(ROOT / "logs" / "transcript-status.log")
+        if transcript:
+            if transcript.get("status") == "running" and age_hours(transcript.get("updated_at")) <= 3:
+                pending.append("字幕任务仍在执行")
+            elif transcript.get("status") != "success" or age_hours(transcript.get("updated_at")) > 30:
+                issues.append("字幕更新失败或超过30小时未成功")
+        else:
+            state = states.get("podcast-transcript-update", {})
+            if not state.get("last_run") or age_hours(state["last_run"]) > 30 or state.get("last_result", 1) != 0:
+                issues.append("字幕任务缺少近期成功记录")
+
+        videos = video_list()
+        ffmpeg = shutil.which("ffmpeg")
+        ffprobe = shutil.which("ffprobe") or (str(Path(ffmpeg).with_name("ffprobe.exe")) if ffmpeg else "ffprobe")
+        validator = AudioValidator(ROOT / "logs" / "audio-validation.log", ffprobe)
+        missing = [v for v in videos if not validator.valid(AUDIO_DIR / f"{v['id']}.m4a", v.get("duration", 0))]
+        validator.save()
+        if missing:
+            issues.append(f"{len(missing)} 个视频音频缺失或时长/容器校验失败")
+            retry_audio = True
+        if retry_audio and not (audio and audio.get("status") == "running" and age_hours(audio.get("updated_at")) <= 2):
+            run_sync_now()
+            pending.append("音频补跑已触发，尚未验证完成")
+
+        sample = next((v["id"] for v in videos if (AUDIO_DIR / f"{v['id']}.m4a").exists()), None)
+        if sample:
+            base = public_base()
+            local_ok = probe_audio("http://localhost:8080", sample)
+            public_ok = bool(base) and probe_audio(base, sample)
+            if not local_ok or not public_ok:
+                recover_services()
+                # Startup is asynchronous: bounded retries, then alert if still broken.
+                for _ in range(3):
+                    time.sleep(2)
+                    local_ok = probe_audio("http://localhost:8080", sample)
+                    public_ok = bool(base) and probe_audio(base, sample)
+                    if local_ok and public_ok:
+                        recovered.append("音频服务已恢复并通过本机/公网Range复测")
+                        break
+                if not local_ok:
+                    issues.append("本机音频Range请求失败")
+                if not public_ok:
+                    issues.append("公网音频Range请求失败或未配置域名")
+        else:
+            issues.append("没有可用于播放链路检测的音频")
+
+        for message in recovered + pending + issues:
+            log(message)
+        write_status("watchdog", "failed" if issues else "pending" if pending else "success", issues=issues, recovered=recovered, pending=pending)
+        if issues:
+            notify("播客巡检发现问题", "; ".join(issues)[:220])
+            return 1
+        log("检测通过" if not pending else "仍有任务执行或补跑待验证")
+        return 0
+    except Exception as exc:
+        log(f"巡检失败: {exc}")
+        write_status("watchdog", "failed", error=str(exc))
+        try:
+            notify("播客巡检失败", str(exc)[:220])
+        except Exception:
+            pass
+        return 1
+    finally:
+        lock.release()
 
 
 if __name__ == "__main__":
-    main()
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None:
+            stream.reconfigure(encoding="utf-8")
+    sys.exit(main())

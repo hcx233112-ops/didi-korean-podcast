@@ -2,8 +2,14 @@ name: Generate Transcripts
 
 on:
   workflow_dispatch:          # 手动触发
-  schedule:
-    - cron: '0 2 * * *'      # 每天凌晨 2 点自动跑（补齐新视频的字幕）
+  # Daily production runs on the Windows host; CI is a manual fallback only.
+
+permissions:
+  contents: write
+
+concurrency:
+  group: podcast-data-writes
+  cancel-in-progress: false
 
 jobs:
   generate:
@@ -19,10 +25,13 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install youtube-transcript-api deep-translator
+        run: pip install -r scripts/requirements-automation.txt
 
       - name: Generate missing transcripts
         run: python3 -u scripts/generate-transcripts-ci.py
+
+      - name: Complete translations
+        run: python3 -u scripts/retranslate.py
 
       - name: Commit new transcripts
         if: always()

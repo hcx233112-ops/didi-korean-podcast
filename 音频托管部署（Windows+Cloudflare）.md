@@ -112,25 +112,24 @@ curl -I -H "Range: bytes=0-100" https://audio.yanxuan-kr.cn/某个视频ID.m4a
 
 ## 自动更新（博主发新视频后全自动）
 
-已经自动的部分（GitHub Actions，不用管）：
+自动化分工：
 
-- `update-videos.yml`：每 4 小时抓频道新视频 → 更新视频列表 → push
-- `generate-transcripts.yml`：每天凌晨 2 点给新视频生成字幕 → push
-- push 后 Vercel 自动重新部署前端
+- `update-videos.yml`：约每 4 小时抓取频道列表并提交；调度可能延迟。
+- Windows `podcast-transcript-update`：每天 05:00 生成字幕、补翻译并提交。
+- `generate-transcripts.yml`：仅手动备用，避免和本地定时任务重复生产。
+- `DidiPodcast-SyncAudio`：每 4 小时同步音频；另保留每日 03:00 补跑。
+- `DidiPodcast-Watchdog`：每小时校验任务、字幕状态、全量音频和本机/公网 Range 请求。
+- 代码推送后，由已配置的 Vercel 集成部署前端。
 
-唯一要在 Windows 上补的：**新视频的音频自动增量下载**。脚本已备好 `scripts\update-audio.bat`，
-它会先 `git pull` 拿到 CI 抓好的最新列表，再跑 `extract-audio.py` 把新音频下下来（已有的跳过）。
-
-挂 Windows 任务计划，每天跑一次（放在 CI 抓视频/字幕之后，比如凌晨 3 点）。
-管理员 PowerShell 跑一次（把路径换成你的实际路径）：
+管理员 PowerShell 中运行一次或更新现有任务：
 
 ```powershell
-schtasks /create /tn "podcast-audio-update" /sc daily /st 03:00 ^
-  /tr "C:\Users\你的用户名\Documents\claude\播客\podcast-player\scripts\update-audio.bat"
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-scheduler.ps1
 ```
 
-之后博主更新 → 几小时内列表/字幕自动上线，凌晨 3 点 Windows 自动把新音频补齐，全程不用动手。
-（前提：Caddy 和 cloudflared 都设成了开机自启，机器开着。）
+安装脚本保留已有有效触发时间，原位更新，不先注销任务。音频下载先在不公开的 `.media-repair` 中完成，通过音轨和时长验证后才原子替换；失败保留旧文件。日志和结构化状态见项目根日志及 `logs/*-status.log`。
+
+机器需要开机且联网。服务异常恢复后会再次验证，本次仅触发补跑不会被记作已经修好。
 
 ---
 
