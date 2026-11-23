@@ -48,7 +48,7 @@ test('local mode makes no cloud requests and explicit edits preserve deletion to
   try{
     let api=app.render();api.toggleFavorite(id);api.toggleFavorite(id);api.saveProgress(id,1800,3600);api.resetProgress(id)
     await new Promise(resolve=>setImmediate(resolve));api=app.render()
-    assert.equal(requests,0);assert.equal(api.favorites.has(id),false);assert.equal(api.getProgress(id),0)
+    assert.equal(requests,0);assert.equal(api.favorites.has(id),false);assert.equal(api.getProgress(id),null)
     const saved=JSON.parse(localStorage.getItem('podcast-sync-v2'))
     assert.equal(saved.favorites[id].value,false);assert.equal(saved.progress[id].deleted,true)
   }finally{app.cleanup();Object.assign(global,original)}
@@ -70,7 +70,7 @@ test('cloud sync authenticates, merges newer remote progress, and preserves an i
   try{
     let api=app.render();api.configureSecret(credential)
     await new Promise(resolve=>setImmediate(resolve));api=app.render()
-    assert.equal(api.getProgress(id),600)
+    assert.equal(api.getProgress(id)?.pos,600)
     api.saveProgress(id,300,3600);await api.syncNow()
     assert.equal(cloud.progress[id].pos,300)
     api.resetProgress(id);await api.syncNow()

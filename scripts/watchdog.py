@@ -97,6 +97,14 @@ def probe_audio(base, video_id):
         return False
 
 
+def readable(path):
+    try:
+        with open(path, "rb") as stream:
+            return len(stream.read(1)) == 1
+    except OSError:
+        return False
+
+
 def public_base():
     value = os.environ.get("NEXT_PUBLIC_AUDIO_BASE", "")
     if not value:
@@ -187,6 +195,10 @@ def main():
         if missing:
             issues.append(f"{len(missing)} 个视频音频缺失或时长/容器校验失败")
             retry_audio = True
+        # The validation cache keys on size/mtime, which survive a broken ACL; the server needs to read.
+        unreadable = [v["id"] for v in videos if v not in missing and not readable(AUDIO_DIR / f"{v['id']}.m4a")]
+        if unreadable:
+            issues.append(f"{len(unreadable)} 个音频文件无法读取（权限异常）: " + ", ".join(unreadable[:5]))
         if retry_audio and not (audio and audio.get("status") == "running" and age_hours(audio.get("updated_at")) <= 2):
             run_sync_now()
             pending.append("音频补跑已触发，尚未验证完成")

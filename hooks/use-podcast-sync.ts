@@ -179,9 +179,15 @@ export function usePodcastSync() {
   }, [apply])
 
   const favorites = useMemo(() => new Set(Object.entries(data.favorites).filter(([, item]) => item.value).map(([id]) => id)), [data.favorites])
-  const videoDetails = useMemo(() => Object.fromEntries(Object.entries(data.progress).filter(([, item]) => !item.deleted && item.dur > 0).map(([id, item]) => [id, { pos: item.pos, dur: item.dur }])), [data.progress])
+  // Unchanged records keep their identity, so memoized rows skip re-rendering on each save.
+  const detailCache = useRef(new WeakMap<object, { pos: number; dur: number; updatedAt: number }>())
+  const videoDetails = useMemo(() => Object.fromEntries(Object.entries(data.progress).filter(([, item]) => !item.deleted && item.dur > 0).map(([id, item]) => {
+    let detail = detailCache.current.get(item)
+    if (!detail) { detail = { pos: item.pos, dur: item.dur, updatedAt: item.updatedAt }; detailCache.current.set(item, detail) }
+    return [id, detail]
+  })), [data.progress])
   const videoProgress = useMemo(() => Object.fromEntries(Object.entries(videoDetails).map(([id, item]) => [id, item.pos / item.dur])), [videoDetails])
-  const getProgress = useCallback((id: string) => { const item = dataRef.current.progress[id]; return item && !item.deleted ? item.pos : 0 }, [])
+  const getProgress = useCallback((id: string) => { const item = dataRef.current.progress[id]; return item && !item.deleted ? { pos: item.pos, dur: item.dur, updatedAt: item.updatedAt } : null }, [])
 
   return { favorites, videoDetails, videoProgress, saveProgress, resetProgress, toggleFavorite, getProgress, secret, status, configureSecret, syncNow: synchronize }
 }

@@ -192,6 +192,23 @@ def download(video_id: str, expected_duration=0) -> str:
         return "ok"
 
 
+def warm_edge(video_ids):
+    """One byte through the CDN makes the edge fetch and cache the whole new episode."""
+    import urllib.request
+    from watchdog import public_base
+    base = public_base().rstrip("/")
+    if not base:
+        return
+    for video_id in video_ids:
+        request = urllib.request.Request(f"{base}/{video_id}.mp4?v=1", headers={"Range": "bytes=0-1", "User-Agent": "DidiPodcast-Healthcheck/1.0"})
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                response.read()
+            log(f"  ☁️  已预热 CDN: {video_id}")
+        except Exception as exc:
+            log(f"  ⚠️  CDN 预热失败 {video_id}: {exc}")
+
+
 def start_transcripts():
     """New episodes get subtitles now instead of at the next daily run; its own lock prevents overlap."""
     try:
@@ -249,6 +266,7 @@ def main():
             log(f"  · {v['id']} {v['title'][:50]}")
 
         done = failed = skipped_live = 0
+        downloaded = []
         for i, v in enumerate(missing, 1):
             log(f"[{i}/{len(missing)}] 下载 {v['id']} {v['title'][:40]}")
             try:
@@ -257,6 +275,7 @@ def main():
                     size_kb = (AUDIO_DIR / f"{v['id']}.m4a").stat().st_size // 1024
                     log(f"  ✅ {size_kb} KB")
                     done += 1
+                    downloaded.append(v["id"])
                 else:
                     log("  ❌ 文件未生成或过小，下次重试")
                     failed += 1
@@ -282,6 +301,7 @@ def main():
         write_status("audio", "failed" if failed else "pending" if skipped_live else "success", downloaded=done, failed=failed, pending=skipped_live)
         if done:
             start_transcripts()
+            warm_edge(downloaded)
         if not failed and not skipped_live:
             log("===== 完成 =====\n")
         return 1 if failed else 0

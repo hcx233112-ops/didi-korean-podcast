@@ -5,13 +5,14 @@ export const metadata: Metadata = {
   title: "Didi Korean Podcast",
   description: "韩语播客，锁屏不断播",
   manifest: '/manifest.json',
+  appleWebApp: { capable: true, title: 'Didi播客', statusBarStyle: 'black-translucent' },
 };
 
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
-  themeColor: '#bf5af2',
+  themeColor: '#0b0b10',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

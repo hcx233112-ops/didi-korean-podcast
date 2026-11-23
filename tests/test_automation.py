@@ -155,8 +155,9 @@ class AutomationRegressionTests(unittest.TestCase):
                     patch.object(module, "find_missing", return_value=[video]), \
                     patch.object(module, "download", return_value=result), \
                     patch.object(module.Path, "stat", return_value=SimpleNamespace(st_size=2048)), \
-                    patch.object(module, "start_transcripts") as trigger:
+                    patch.object(module, "start_transcripts") as trigger, patch.object(module, "warm_edge") as warm:
                 module.main()
+            self.assertEqual(warm.call_count, expected)
             self.assertEqual(trigger.call_count, expected)
 
     def test_transcript_log_is_rotated(self):
@@ -270,6 +271,21 @@ class AutomationRegressionTests(unittest.TestCase):
                 self.assertEqual(module.main(), 1)
                 retry.assert_called_once()
                 validator.valid.assert_called_once_with(directory / "abcdefghijk.m4a", 2000)
+
+    def test_watchdog_reports_audio_the_server_cannot_read(self):
+        module = load("watchdog")
+        from automation_common import utc_now
+        states = {name: {"exists": True, "enabled": True, "last_result": 0, "last_run": utc_now()} for name in module.TASK_NAMES}
+        good = {"status": "success", "updated_at": utc_now()}
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory / "abcdefghijk.m4a").write_bytes(b"x" * 60000)
+            with patch.object(module, "AUDIO_DIR", directory), patch.object(module, "readable", return_value=False), patch.object(module, "task_states", return_value=states), patch.object(module, "read_json", return_value=good), patch.object(module, "video_list", return_value=[{"id": "abcdefghijk", "duration": 2000}]), patch.object(module, "public_base", return_value="https://example.test"), patch.object(module, "probe_audio", return_value=True), patch.object(module, "notify") as notify, patch.object(module, "write_status") as status, patch.object(module, "log"):
+                self.assertEqual(module.main(), 1)
+                self.assertIn("无法读取", status.call_args.kwargs["issues"][0])
+                notify.assert_called_once()
+        self.assertTrue(module.readable(Path(__file__)))
+        self.assertFalse(module.readable(Path(tmp) / "gone.m4a"))
 
     def test_pending_translation_includes_blank_chinese(self):
         module = load("retranslate")

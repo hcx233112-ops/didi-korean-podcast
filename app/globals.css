@@ -1,69 +1,81 @@
 @import "tailwindcss";
 
 :root {
-  --bg: #f2f2f7;
-  --bg-card: #ffffff;
-  --bg-raised: #f0f0f5;
-  --bg-glass: rgba(242,242,247,0.88);
-  --hover: rgba(0,0,0,0.05);
-  --text-primary: #000000;
-  --text-secondary: #6c6c6e;
-  --text-tertiary: #aeaeb2;
-  --separator: rgba(0,0,0,0.1);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #000000;
-    --bg-card: #1c1c1e;
-    --bg-raised: #111111;
-    --bg-glass: rgba(28,28,30,0.92);
-    --hover: rgba(255,255,255,0.05);
-    --text-primary: #ffffff;
-    --text-secondary: #8e8e93;
-    --text-tertiary: #636366;
-    --separator: rgba(255,255,255,0.1);
-  }
+  color-scheme: dark;
+  --bg: #0b0b10;
+  --surface: #16161d;
+  --surface-2: #20202a;
+  --line: rgba(255, 255, 255, 0.09);
+  --text: #f5f5f7;
+  --text-2: rgba(235, 235, 245, 0.64);
+  --text-3: rgba(235, 235, 245, 0.38);
+  --accent: #c58cff;
+  --accent-soft: rgba(197, 140, 255, 0.16);
+  --tint: 92 60 140;
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);
 }
 
 * { -webkit-tap-highlight-color: transparent; }
-.scroll-picker { -ms-overflow-style: none; scrollbar-width: none; }
-.scroll-picker::-webkit-scrollbar { display: none }
-
+html, body { background: var(--bg); }
 body {
-  background: var(--bg);
-  color: var(--text-primary);
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", sans-serif;
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Apple SD Gothic Neo", sans-serif;
   overscroll-behavior: none;
+  -webkit-font-smoothing: antialiased;
 }
 
-input[type=range] {
+.no-scrollbar { scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+
+/* Press feedback: every tappable surface visibly reacts. */
+.tap { transition: transform 0.16s var(--ease), opacity 0.16s; }
+.tap:active { transform: scale(0.96); opacity: 0.85; }
+
+.glass {
+  background: rgba(22, 22, 29, 0.78);
+  -webkit-backdrop-filter: saturate(180%) blur(22px);
+  backdrop-filter: saturate(180%) blur(22px);
+}
+
+.skeleton {
+  background: linear-gradient(90deg, var(--surface) 0%, var(--surface-2) 50%, var(--surface) 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+
+input[type=range].seek {
   -webkit-appearance: none;
   appearance: none;
   background: transparent;
+  width: 100%;
+  height: 28px;
+  margin: 0;
   cursor: pointer;
 }
-input[type=range]::-webkit-slider-runnable-track {
-  height: 3px;
-  border-radius: 2px;
-}
-input[type=range]::-webkit-slider-thumb {
+input[type=range].seek::-webkit-slider-runnable-track { height: 28px; background: transparent; }
+input[type=range].seek::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 14px;
-  height: 14px;
+  width: 18px;
+  height: 18px;
+  margin-top: 5px;
   border-radius: 50%;
-  background: var(--text-primary);
-  margin-top: -5.5px;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
+input[type=range].seek:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 8px; }
 
-@keyframes fade-in  { from { opacity: 0 } to { opacity: 1 } }
+@keyframes shimmer { from { background-position: 200% 0 } to { background-position: -200% 0 } }
+@keyframes fade-in { from { opacity: 0 } to { opacity: 1 } }
 @keyframes fade-out { from { opacity: 1 } to { opacity: 0 } }
-@keyframes sheet-up   { from { transform: translateY(100%) } to { transform: translateY(0) } }
+@keyframes sheet-up { from { transform: translateY(100%) } to { transform: translateY(0) } }
 @keyframes sheet-down { from { transform: translateY(0) } to { transform: translateY(100%) } }
-@keyframes page-up    { from { transform: translateY(100%) } to { transform: translateY(0) } }
-@keyframes page-down  { from { transform: translateY(0) } to { transform: translateY(100%) } }
-@keyframes eq-bounce  {
-  0%, 100% { transform: scaleY(0.35); }
-  50%       { transform: scaleY(1); }
+@keyframes rise { from { opacity: 0; transform: translateY(10px) } to { opacity: 1; transform: none } }
+@keyframes toast { 0% { opacity: 0; transform: translate(-50%, 12px) scale(0.96) } 12%, 85% { opacity: 1; transform: translate(-50%, 0) scale(1) } 100% { opacity: 0; transform: translate(-50%, -6px) } }
+@keyframes eq { 0%, 100% { transform: scaleY(0.35) } 50% { transform: scaleY(1) } }
+
+.rise { animation: rise 0.45s var(--ease) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }

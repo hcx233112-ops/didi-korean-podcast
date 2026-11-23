@@ -54,11 +54,22 @@ test('full transcript stays browsable, keyboard seeking works, and autoplay chan
   expect(errors).toEqual([])
 })
 
-test('list fetch errors have an accessible retry action', async ({ page }) => {
+test('a failed list refresh keeps the prerendered library usable', async ({ page }) => {
   await page.route('**/data/videos/didi.json', route => route.fulfill({ status: 503, json: { error: 'offline' } }))
   await page.goto('/')
-  await expect(page.getByText('节目列表加载失败，请检查网络后重试')).toBeVisible()
-  await expect(page.getByRole('button', { name: '重试加载', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: /全部节目/ })).toBeVisible()
+  await expect(page.locator('[aria-label^="播放 "]').first()).toBeVisible()
+  await expect(page.getByText('节目列表加载失败，请检查网络后重试')).toHaveCount(0)
+})
+
+test('home resumes the latest unfinished episode slightly before where it stopped', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('podcast-sync-v2', JSON.stringify({ version: 2, favorites: {}, progress: { lmnopqrstuv: { pos: 600, dur: 2000, updatedAt: Date.now() } } }))
+  })
+  await page.goto('/')
+  await page.getByRole('button', { name: '继续播放 Second episode', exact: true }).click()
+  await expect.poll(() => page.locator('audio').evaluate((audio: HTMLAudioElement) => audio.currentTime)).toBe(597)
+  await expect(page.getByRole('button', { name: '继续 First episode' })).toHaveCount(0)
 })
 
 test('background audio pause persists the latest listening position', async ({ page }) => {

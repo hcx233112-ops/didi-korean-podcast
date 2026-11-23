@@ -61,28 +61,40 @@ test('sleep timer uses its deadline even after background callbacks are delayed'
   assert.equal(runtime.remainingTimerSeconds(60000,0),60);
   assert.equal(runtime.remainingTimerSeconds(60000,61000),0);
 });
+const appSource=()=>fs.readFileSync(path.join(__dirname,'../components/podcast-app.tsx'),'utf8');
+const extract=(source,name)=>new RegExp(String.raw`function ${name}\(\) \{[\s\S]*?\n  \}`).exec(source)[0];
+const js=fn=>ts.transpileModule(fn,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText.trim().replace(/;$/,"");
+function audioDependencies(audio,overrides){
+  return {audioRef:{current:null},document:{querySelector:()=>audio},Audio:function(){return audio},setPlaying(){},lastPosRef:{current:null},persistCurrent(){},flushListening(){},syncNow:async()=>{},checkTimer(){},setPlaybackError(){},currentIdRef:{current:'abcdefghijk'},saveProgress(){},blockAutoAdvanceRef:{current:false},stopAfterCurrentRef:{current:false},setStopAfterCurrent(){},nextOf:()=>null,playRef:{current(){}},resumeAtRef:{current:0},...overrides};
+}
 test('the player saves progress from background audio events, including pause and seek', () => {
-  const page=fs.readFileSync(path.join(__dirname,'../app/page.tsx'),'utf8');
-  const functionSource=/function ensureAudio\(\): HTMLAudioElement \{[\s\S]*?\n  \}/.exec(page)[0].replace('(): HTMLAudioElement','()');
   const handlers={},saved=[];
   const audio={currentTime:1800,duration:3600,paused:false,addEventListener:(event,fn)=>{handlers[event]=fn}};
   const saver=runtime.createProgressSaver((...args)=>saved.push(args));
-  const dependencies={playerRef:{current:null},audioElRef:{current:audio},setPlaying(){},persistCurrent(force){saver(audio,'abcdefghijk',force)},syncNow:async()=>{},checkTimer(){},setPlaybackError(){},currentIdRef:{current:'abcdefghijk'},saveProgress(){},stopAfterCurrentRef:{current:false},setStopAfterCurrent(){},videosRef:{current:[]},playFnRef:{current(){}},savedPosRef:{current:0}};
-  new Function(...Object.keys(dependencies),`return (${functionSource})()`)(...Object.values(dependencies));
+  const dependencies=audioDependencies(audio,{persistCurrent(force){saver(audio,'abcdefghijk',force)}});
+  new Function(...Object.keys(dependencies),`return (${js(extract(appSource(),'ensureAudio'))})()`)(...Object.values(dependencies));
   handlers.timeupdate(); audio.currentTime=1900;audio.paused=true;handlers.pause();audio.currentTime=600;handlers.seeked();
   assert.deepEqual(saved.map(item=>item[1]),[1800,1900,600]);
 });
 
 test('an ended event at the sleep deadline cannot start the next episode', () => {
-  const page=fs.readFileSync(path.join(__dirname,'../app/page.tsx'),'utf8');
-  const ensure=/function ensureAudio\(\): HTMLAudioElement \{[\s\S]*?\n  \}/.exec(page)[0].replace('(): HTMLAudioElement','()');
-  const timer=/function checkTimer\(\) \{[\s\S]*?\n  \}/.exec(page)[0];
+  const source=appSource();
   const handlers={};let next=0;
   const audio={currentTime:3600,duration:3600,paused:true,pause(){},addEventListener:(event,fn)=>handlers[event]=fn};
-  const dependencies={playerRef:{current:null},audioElRef:{current:audio},setPlaying(){},persistCurrent(){},syncNow:async()=>{},setPlaybackError(){},currentIdRef:{current:'A'},saveProgress(){},stopAfterCurrentRef:{current:false},setStopAfterCurrent(){},videosRef:{current:[{id:'A'},{id:'B'}]},playFnRef:{current(){next++}},savedPosRef:{current:0},deadlineRef:{current:Date.now()-1},timerRef:{current:null},blockAutoAdvanceRef:{current:false},playbackRequesterRef:{current:{cancel(){}}},setTimeLeft(){},setTimerMinutes(){},remainingTimerSeconds:runtime.remainingTimerSeconds};
-  const component=new Function(...Object.keys(dependencies),`${ensure};${timer};return {ensureAudio,checkTimer}`)(...Object.values(dependencies));
+  const dependencies=audioDependencies(audio,{currentIdRef:{current:'A'},nextOf:()=>({id:'B'}),playRef:{current(){next++}},deadlineRef:{current:Date.now()-1},timerRef:{current:null},requester:{cancel(){}},setTimeLeft(){},setTimerMinutes(){},remainingTimerSeconds:runtime.remainingTimerSeconds});
+  delete dependencies.checkTimer;
+  const component=new Function(...Object.keys(dependencies),`${js(extract(source,'ensureAudio'))};${js(extract(source,'checkTimer'))};return {ensureAudio,checkTimer}`)(...Object.values(dependencies));
   component.ensureAudio();handlers.ended();
   // Some browsers queue another ended notification after the timer callback.
   component.checkTimer();handlers.ended();
   assert.equal(next,0);
+});
+
+test('without a sleep timer, an ended episode advances to the next one', () => {
+  const handlers={};let next=0;
+  const audio={currentTime:3600,duration:3600,paused:true,addEventListener:(event,fn)=>handlers[event]=fn};
+  const dependencies=audioDependencies(audio,{nextOf:()=>({id:'B'}),playRef:{current(){next++}}});
+  new Function(...Object.keys(dependencies),`return (${js(extract(appSource(),'ensureAudio'))})()`)(...Object.values(dependencies));
+  handlers.ended();
+  assert.equal(next,1);
 });

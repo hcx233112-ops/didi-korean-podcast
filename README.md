@@ -44,6 +44,7 @@ NEXT_PUBLIC_AUDIO_BASE=https://audio.yanxuan-kr.cn/
 - 字幕：Windows 每日任务为主要入口；CI 作为手动备用，避免双重生产者同时修改同一字幕。
 - 无字幕结果保留检查时间，七天后自动复查；指定视频 ID 可以强制重试。
 - 音频：每小时同步，校验完整性后替换；有新音频时立即触发字幕生成；巡检同时检查任务和 HTTP 服务，恢复失败会通知。
+- 音频 CDN：前端请求 `<id>.mp4?v=N`，Caddy 映射到同名 `.m4a` 并仅对成功响应加缓存头，Cloudflare 默认缓存 `.mp4`。替换已发布的音频后，在 `components/podcast-app.tsx` 递增 `AUDIO_VERSION` 使边缘缓存失效。
 - 调度与维护应在现有项目目录执行，任务计划、Caddyfile 引用的是该绝对路径。
 - 2026-11-02 修复前的5个异常音频保留在 `.audio-repair-backups/2026-11-02/`，不进 Git、不被 Caddy 提供。
 

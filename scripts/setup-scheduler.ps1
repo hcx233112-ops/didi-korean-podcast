@@ -11,6 +11,9 @@ try {
         $Old = Get-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue
         if ($Old -and $Old.Triggers -and @($Old.Triggers | Where-Object { $_.Enabled }).Count -gt 0) {
             $Triggers = $Old.Triggers
+            if ($IntervalHours) {
+                foreach ($Trigger in $Triggers) { if ($Trigger.Repetition) { $Trigger.Repetition.Interval = "PT$($IntervalHours)H" } }
+            }
         } elseif ($AtLogon) {
             $Triggers = New-ScheduledTaskTrigger -AtLogOn
         } elseif ($DailyTime) {
