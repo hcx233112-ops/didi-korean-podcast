@@ -145,6 +145,28 @@ class AutomationRegressionTests(unittest.TestCase):
                 self.assertEqual(module.download("abcdefghijk", 1000), "ok")
             self.assertEqual(old.read_bytes(), b"new audio")
 
+    def test_new_audio_triggers_subtitles_only_when_downloaded(self):
+        module = load("sync-audio")
+        video = {"id": "abcdefghijk", "title": "t", "duration": 1000}
+        for result, expected in (("ok", 1), ("fail", 0)):
+            with patch.object(module, "check_deps"), patch.object(module, "git_pull"), patch.object(module, "log"), \
+                    patch.object(module, "write_status"), patch.object(module.time, "sleep"), \
+                    patch.object(module, "load_all_videos", return_value=[video]), \
+                    patch.object(module, "find_missing", return_value=[video]), \
+                    patch.object(module, "download", return_value=result), \
+                    patch.object(module.Path, "stat", return_value=SimpleNamespace(st_size=2048)), \
+                    patch.object(module, "start_transcripts") as trigger:
+                module.main()
+            self.assertEqual(trigger.call_count, expected)
+
+    def test_transcript_log_is_rotated(self):
+        module = load("run-transcripts")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "log.txt"
+            path.write_text("\n".join(f"line {i}" for i in range(5000)), encoding="utf-8")
+            module.rotate_log(path, max_bytes=100, keep_lines=10)
+            self.assertEqual(path.read_text(encoding="utf-8").splitlines(), [f"line {i}" for i in range(4990, 5000)])
+
     def test_forced_negative_cache_can_be_rechecked(self):
         module = load("generate-transcripts")
         from automation_common import utc_now

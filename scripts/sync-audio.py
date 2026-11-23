@@ -192,6 +192,15 @@ def download(video_id: str, expected_duration=0) -> str:
         return "ok"
 
 
+def start_transcripts():
+    """New episodes get subtitles now instead of at the next daily run; its own lock prevents overlap."""
+    try:
+        subprocess.Popen([sys.executable, str(ROOT / "scripts" / "run-transcripts.py")], cwd=str(ROOT), creationflags=NO_WINDOW)
+        log("已触发字幕生成")
+    except OSError as exc:
+        log(f"  ⚠️  字幕生成触发失败，等待每日任务: {exc}")
+
+
 # ── 依赖检查 / yt-dlp 更新 ────────────────────────────────────────────────
 
 def check_deps():
@@ -271,6 +280,8 @@ def main():
         total = len(list(AUDIO_DIR.glob("*.m4a")))
         log(f"下载完成: {done}  失败: {failed}  待开播: {skipped_live}  音频总数: {total}")
         write_status("audio", "failed" if failed else "pending" if skipped_live else "success", downloaded=done, failed=failed, pending=skipped_live)
+        if done:
+            start_transcripts()
         if not failed and not skipped_live:
             log("===== 完成 =====\n")
         return 1 if failed else 0

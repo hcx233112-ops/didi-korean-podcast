@@ -36,10 +36,9 @@ try {
         Write-Host "Updated: $Name"
     }
 
-    Register-DidiTask -Name 'DidiPodcast-SyncAudio' -Script 'sync-audio.py' -IntervalHours 4 -TimeoutMinutes 120 -Description 'Audio sync every 4 hours'
+    Register-DidiTask -Name 'DidiPodcast-SyncAudio' -Script 'sync-audio.py' -IntervalHours 1 -TimeoutMinutes 120 -Description 'Hourly audio sync'
     Register-DidiTask -Name 'DidiPodcast-Watchdog' -Script 'watchdog.py' -IntervalHours 1 -TimeoutMinutes 10 -Description 'Hourly task and audio delivery checks'
     Register-DidiTask -Name 'DidiPodcast-AudioServer' -Script 'start-audio-server.py' -AtLogon -TimeoutMinutes 2 -Description 'Start local audio services at logon'
-    Register-DidiTask -Name 'podcast-audio-update' -Script 'sync-audio.py' -DailyTime '03:00' -TimeoutMinutes 120 -Description 'Daily audio sync'
     Register-DidiTask -Name 'podcast-transcript-update' -Script 'run-transcripts.py' -DailyTime '05:00' -TimeoutMinutes 190 -Description 'Daily subtitle generation and translation'
     exit 0
 } catch {

@@ -11,6 +11,15 @@ if sys.stderr is None:
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 bat = os.path.join(ROOT, "scripts", "update-transcripts.bat")
+def rotate_log(path, max_bytes=200_000, keep_lines=1000):
+    try:
+        if path.stat().st_size > max_bytes:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            path.write_text("\n".join(lines[-keep_lines:]) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
 # CREATE_NO_WINDOW：不创建新控制台窗口
 def main():
     lock = ProcessLock(Path(ROOT) / "logs" / "repository-lock.log")
@@ -18,6 +27,7 @@ def main():
         print("仓库正被另一个自动任务使用，稍后重试")
         return 1
     try:
+        rotate_log(Path(ROOT) / "transcript-log.txt")
         write_status("transcript", "running")
         code = subprocess.run(["cmd", "/c", bat], cwd=ROOT, creationflags=0x08000000, timeout=3 * 3600).returncode
         write_status("transcript", "success" if code == 0 else "failed", exit_code=code)

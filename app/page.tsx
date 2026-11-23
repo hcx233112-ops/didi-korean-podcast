@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import channelsData from '@/data/channels.json'
 import { usePodcastSync } from '@/hooks/use-podcast-sync'
 import { createProgressSaver, createTranscriptLoader, createPlaybackRequester, remainingTimerSeconds } from '@/lib/player-runtime'
@@ -90,6 +90,157 @@ const FILTERS: { key: FilterType; label: string }[] = [
   { key: 'inprogress', label: '进行中' },
   { key: 'done', label: '已听完' },
 ]
+
+const TranscriptRow = memo(function TranscriptRow({ index, seg, active, showTranslation, ac, onSeek }: {
+  index: number; seg: TranscriptSegment; active: boolean; showTranslation: boolean; ac: string; onSeek: (start: number) => void
+}) {
+  return (
+    <button id={`seg-${index}`} onClick={() => onSeek(seg.start)}
+      className="w-full text-left px-5 py-2.5 active:opacity-60"
+      style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 72px' }}>
+      {active && <div className="w-5 h-[2px] rounded-full mb-2" style={{ background: ac }} />}
+      <p style={{
+        color: active ? 'var(--text-primary)' : 'var(--text-tertiary)',
+        fontWeight: active ? 600 : 400,
+        fontSize: active ? 17 : 15,
+        lineHeight: 1.6,
+        transition: 'color 0.15s',
+      }}>{seg.ko}</p>
+      {showTranslation && seg.zh && seg.zh !== seg.ko && (
+        <p style={{
+          color: active ? ac : 'var(--text-tertiary)',
+          fontSize: active ? 14 : 13,
+          fontWeight: active ? 500 : 400,
+          lineHeight: 1.5,
+          marginTop: 4,
+          opacity: active ? 1 : 0.65,
+          transition: 'color 0.15s',
+        }}>{seg.zh}</p>
+      )}
+    </button>
+  )
+})
+
+const VideoRow = memo(function VideoRow({ video, isActive, playing, isFav, prog, savedPos, savedDur, note, ac, onPlay, onToggleFav, onResetProgress }: {
+  video: Video; isActive: boolean; playing: boolean; isFav: boolean; prog: number
+  savedPos?: number; savedDur?: number; note?: string; ac: string
+  onPlay: (v: Video) => void
+  onToggleFav: (id: string, e: React.MouseEvent) => void
+  onResetProgress: (id: string, e: React.MouseEvent) => void
+}) {
+  const isDone = prog >= DONE_THRESHOLD
+  const totalDur = video.duration ?? savedDur
+  const pct = prog > 0 ? Math.round(prog * 100) : 0
+  return (
+    <div className="relative">
+      {isActive && (
+        <div className="absolute left-0 top-3 bottom-3 w-[3px] rounded-r-full" style={{ background: ac }} />
+      )}
+      <div
+        role="button" tabIndex={0} aria-label={`播放 ${video.title}`}
+        onKeyDown={e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onPlay(video) } }}
+        onClick={() => onPlay(video)}
+        className="flex items-center gap-3.5 px-5 py-3.5 cursor-pointer active:opacity-60 transition-opacity"
+        style={{ background: isActive ? `${ac}12` : 'transparent' }}
+      >
+        <div className="relative flex-shrink-0">
+          <img src={video.thumbnail} alt="" loading="lazy" decoding="async"
+            className="w-[54px] h-[54px] rounded-xl object-cover"
+            style={{ background: 'var(--bg-raised)' }} />
+          {!isActive && isDone && (
+            <div className="absolute -top-1 -right-1 w-[18px] h-[18px] rounded-full flex items-center justify-center shadow-sm"
+              style={{ background: ac }}>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+            </div>
+          )}
+          {isActive && (
+            <div className="absolute inset-0 rounded-xl flex items-center justify-center"
+              style={{ background: `${ac}cc` }}>
+              {playing ? (
+                <div className="flex items-end gap-[3px]" style={{ height: 14 }}>
+                  {[0, 0.18, 0.36].map((delay, i) => (
+                    <div key={i} style={{
+                      width: 3, height: 14, background: 'white', borderRadius: 2,
+                      transformOrigin: 'bottom',
+                      animation: `eq-bounce 0.65s ease-in-out infinite`,
+                      animationDelay: `${delay}s`,
+                    }} />
+                  ))}
+                </div>
+              ) : (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="white">
+                  <path d="M8 5v14l11-7z"/>
+                </svg>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="flex-1 min-w-0 pr-9">
+          <p className="text-[14px] leading-snug line-clamp-2"
+            style={{
+              color: isActive ? ac : 'var(--text-primary)',
+              fontWeight: isActive ? 600 : 500,
+            }}>
+            {video.title}
+          </p>
+          <div className="flex items-center gap-2 mt-1 flex-wrap">
+            <p className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
+              {formatDate(video.published)}
+            </p>
+            {totalDur !== undefined && (
+              <p className="text-[11px] tabular-nums" style={{ color: 'var(--text-tertiary)' }}>
+                {savedPos !== undefined && !isDone
+                  ? <>{formatTime(savedPos)}<span style={{ opacity: 0.5 }}> / {formatTime(totalDur)}</span></>
+                  : formatTime(totalDur)}
+              </p>
+            )}
+            {pct > 0 && !isDone && !isActive && (
+              <span className="text-[10px] tabular-nums font-medium" style={{ color: ac, opacity: 0.8 }}>
+                {pct}%
+              </span>
+            )}
+            {isDone && !isActive && (
+              <button onClick={(e) => onResetProgress(video.id, e)}
+                className="text-[10px] px-1.5 py-0.5 rounded-full font-medium active:opacity-50 flex items-center gap-1"
+                style={{ background: `${ac}20`, color: ac }}>
+                已听完
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path d="M18 6L6 18M6 6l12 12"/>
+                </svg>
+              </button>
+            )}
+          </div>
+          {prog > 0 && prog < DONE_THRESHOLD && (
+            <div className="mt-1.5 h-[2px] rounded-full overflow-hidden" style={{ background: 'var(--separator)' }}>
+              <div className="h-full rounded-full"
+                style={{ width: `${pct}%`, background: ac, opacity: isActive ? 1 : 0.6 }} />
+            </div>
+          )}
+          {note && (
+            <p className="text-[11px] mt-1 line-clamp-1" style={{ color: 'var(--text-tertiary)', fontStyle: 'italic' }}>
+              {note}
+            </p>
+          )}
+        </div>
+      </div>
+
+      <button
+        aria-label={isFav ? `取消收藏 ${video.title}` : `收藏 ${video.title}`} aria-pressed={isFav}
+        onClick={(e) => onToggleFav(video.id, e)}
+        className="absolute right-3 top-1/2 -translate-y-1/2 p-2.5 active:scale-90 transition-transform">
+        <svg width="17" height="17" viewBox="0 0 24 24"
+          fill={isFav ? ac : 'none'}
+          stroke={isFav ? ac : 'var(--text-tertiary)'}
+          strokeWidth="2">
+          <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+        </svg>
+      </button>
+    </div>
+  )
+})
 
 export default function Home() {
   const [activeChannelId, setActiveChannelId] = useState(channels[0].id)
@@ -548,132 +699,20 @@ export default function Home() {
     return true
   }), [videos, videoProgress, filter, favorites, searchQuery])
 
-  // 稳定回调：列表用 useMemo 缓存，回调引用必须稳定，避免每秒进度更新触发整列重渲染
-  const handlersRef = useRef({ play, toggleFavorite, resetProgress })
-  useEffect(() => { handlersRef.current = { play, toggleFavorite, resetProgress } })
+  function seekToSegment(start: number) {
+    const a = playerRef.current
+    if (!a) return
+    a.currentTime = start
+    if (a.paused) requestPlayback()
+  }
+
+  // Stable callbacks let memoized rows skip the per-second and per-save re-renders.
+  const handlersRef = useRef({ play, toggleFavorite, resetProgress, seekToSegment })
+  useEffect(() => { handlersRef.current = { play, toggleFavorite, resetProgress, seekToSegment } })
   const onPlay = useCallback((v: Video) => handlersRef.current.play(v), [])
   const onToggleFav = useCallback((id: string, e: React.MouseEvent) => handlersRef.current.toggleFavorite(id, e), [])
   const onResetProgress = useCallback((id: string, e: React.MouseEvent) => handlersRef.current.resetProgress(id, e), [])
-
-  const videoList = useMemo(() => filteredVideos.map(video => {
-    const isActive = current?.id === video.id
-    const isFav = favorites.has(video.id)
-    const prog = videoProgress[video.id] ?? 0
-    const isDone = prog >= DONE_THRESHOLD
-    const det = videoDetails[video.id]
-    const totalDur = video.duration ?? det?.dur
-    const pct = prog > 0 ? Math.round(prog * 100) : 0
-    const note = notes[video.id]
-    return (
-      <div key={video.id} className="relative">
-        {isActive && (
-          <div className="absolute left-0 top-3 bottom-3 w-[3px] rounded-r-full" style={{ background: ac }} />
-        )}
-        <div
-          role="button" tabIndex={0} aria-label={`播放 ${video.title}`}
-          onKeyDown={e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onPlay(video) } }}
-          onClick={() => onPlay(video)}
-          className="flex items-center gap-3.5 px-5 py-3.5 cursor-pointer active:opacity-60 transition-opacity"
-          style={{ background: isActive ? `${ac}12` : 'transparent' }}
-        >
-          <div className="relative flex-shrink-0">
-            <img src={video.thumbnail} alt="" loading="lazy"
-              className="w-[54px] h-[54px] rounded-xl object-cover"
-              style={{ background: 'var(--bg-raised)' }} />
-            {!isActive && isDone && (
-              <div className="absolute -top-1 -right-1 w-[18px] h-[18px] rounded-full flex items-center justify-center shadow-sm"
-                style={{ background: ac }}>
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3">
-                  <polyline points="20 6 9 17 4 12"/>
-                </svg>
-              </div>
-            )}
-            {isActive && (
-              <div className="absolute inset-0 rounded-xl flex items-center justify-center"
-                style={{ background: `${ac}cc` }}>
-                {playing ? (
-                  <div className="flex items-end gap-[3px]" style={{ height: 14 }}>
-                    {[0, 0.18, 0.36].map((delay, i) => (
-                      <div key={i} style={{
-                        width: 3, height: 14, background: 'white', borderRadius: 2,
-                        transformOrigin: 'bottom',
-                        animation: `eq-bounce 0.65s ease-in-out infinite`,
-                        animationDelay: `${delay}s`,
-                      }} />
-                    ))}
-                  </div>
-                ) : (
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="white">
-                    <path d="M8 5v14l11-7z"/>
-                  </svg>
-                )}
-              </div>
-            )}
-          </div>
-
-          <div className="flex-1 min-w-0 pr-9">
-            <p className="text-[14px] leading-snug line-clamp-2"
-              style={{
-                color: isActive ? ac : 'var(--text-primary)',
-                fontWeight: isActive ? 600 : 500,
-              }}>
-              {video.title}
-            </p>
-            <div className="flex items-center gap-2 mt-1 flex-wrap">
-              <p className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
-                {formatDate(video.published)}
-              </p>
-              {totalDur !== undefined && (
-                <p className="text-[11px] tabular-nums" style={{ color: 'var(--text-tertiary)' }}>
-                  {det && !isDone
-                    ? <>{formatTime(det.pos)}<span style={{ opacity: 0.5 }}> / {formatTime(totalDur)}</span></>
-                    : formatTime(totalDur)}
-                </p>
-              )}
-              {pct > 0 && !isDone && !isActive && (
-                <span className="text-[10px] tabular-nums font-medium" style={{ color: ac, opacity: 0.8 }}>
-                  {pct}%
-                </span>
-              )}
-              {isDone && !isActive && (
-                <button onClick={(e) => onResetProgress(video.id, e)}
-                  className="text-[10px] px-1.5 py-0.5 rounded-full font-medium active:opacity-50 flex items-center gap-1"
-                  style={{ background: `${ac}20`, color: ac }}>
-                  已听完
-                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                    <path d="M18 6L6 18M6 6l12 12"/>
-                  </svg>
-                </button>
-              )}
-            </div>
-            {prog > 0 && prog < DONE_THRESHOLD && (
-              <div className="mt-1.5 h-[2px] rounded-full overflow-hidden" style={{ background: 'var(--separator)' }}>
-                <div className="h-full rounded-full"
-                  style={{ width: `${Math.round(prog * 100)}%`, background: ac, opacity: isActive ? 1 : 0.6 }} />
-              </div>
-            )}
-            {note && (
-              <p className="text-[11px] mt-1 line-clamp-1" style={{ color: 'var(--text-tertiary)', fontStyle: 'italic' }}>
-                {note}
-              </p>
-            )}
-          </div>
-        </div>
-
-        <button
-          aria-label={isFav ? `取消收藏 ${video.title}` : `收藏 ${video.title}`} aria-pressed={isFav}
-          onClick={(e) => onToggleFav(video.id, e)}
-          className="absolute right-3 top-1/2 -translate-y-1/2 p-2.5 active:scale-90 transition-transform">
-          <svg width="17" height="17" viewBox="0 0 24 24"
-            fill={isFav ? ac : 'none'}
-            stroke={isFav ? ac : 'var(--text-tertiary)'}
-            strokeWidth="2">
-            <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
-          </svg>
-        </button>
-      </div>
-    )
-  }), [filteredVideos, videoProgress, favorites, notes, videoDetails, current, playing, ac, onPlay, onToggleFav, onResetProgress])
+  const onSeekSegment = useCallback((start: number) => handlersRef.current.seekToSegment(start), [])
 
   playFnRef.current = play
 
@@ -783,7 +822,16 @@ export default function Home() {
 
         {/* Video list */}
         <div className="pb-1">
-          {videoList}
+          {filteredVideos.map(video => {
+            const isActive = current?.id === video.id
+            const det = videoDetails[video.id]
+            return (
+              <VideoRow key={video.id} video={video} isActive={isActive} playing={isActive && playing}
+                isFav={favorites.has(video.id)} prog={videoProgress[video.id] ?? 0}
+                savedPos={det?.pos} savedDur={det?.dur} note={notes[video.id]} ac={ac}
+                onPlay={onPlay} onToggleFav={onToggleFav} onResetProgress={onResetProgress} />
+            )
+          })}
         </div>
 
         {current && <div className="h-28" />}
@@ -1082,40 +1130,10 @@ export default function Home() {
             onTouchEnd={markTranscriptScrolling}>
             {transcriptLoading && <p className="text-center py-20 text-sm" style={{ color: 'var(--text-tertiary)' }}>加载字幕中…</p>}
             {transcriptError && <div className="text-center py-12 text-sm" role="status"><p>{transcriptError}</p><button className="underline mt-3" onClick={() => setTranscriptRetry(value => value + 1)}>重新加载字幕</button></div>}
-            {transcriptSegs.map((seg, i) => {
-              const isActiveSeg = i === currentSegIdx
-              return (
-                <button id={`seg-${i}`} key={i}
-                  onClick={() => {
-                    const a = playerRef.current
-                    if (!a) return
-                    a.currentTime = seg.start
-                    if (a.paused) requestPlayback()
-                  }}
-                  className="w-full text-left px-5 py-2.5 active:opacity-60"
-                  style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 72px' }}>
-                  {isActiveSeg && <div className="w-5 h-[2px] rounded-full mb-2" style={{ background: ac }} />}
-                  <p style={{
-                    color: isActiveSeg ? 'var(--text-primary)' : 'var(--text-tertiary)',
-                    fontWeight: isActiveSeg ? 600 : 400,
-                    fontSize: isActiveSeg ? 17 : 15,
-                    lineHeight: 1.6,
-                    transition: 'color 0.15s',
-                  }}>{seg.ko}</p>
-                  {showTranslation && seg.zh && seg.zh !== seg.ko && (
-                    <p style={{
-                      color: isActiveSeg ? ac : 'var(--text-tertiary)',
-                      fontSize: isActiveSeg ? 14 : 13,
-                      fontWeight: isActiveSeg ? 500 : 400,
-                      lineHeight: 1.5,
-                      marginTop: 4,
-                      opacity: isActiveSeg ? 1 : 0.65,
-                      transition: 'color 0.15s',
-                    }}>{seg.zh}</p>
-                  )}
-                </button>
-              )
-            })}
+            {transcriptSegs.map((seg, i) => (
+              <TranscriptRow key={i} index={i} seg={seg} active={i === currentSegIdx}
+                showTranslation={showTranslation} ac={ac} onSeek={onSeekSegment} />
+            ))}
             <div className="h-24" />
           </div>
 

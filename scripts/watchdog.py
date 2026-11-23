@@ -19,7 +19,7 @@ CHANNELS_DIR = ROOT / "public" / "data" / "videos"
 LOG_FILE = ROOT / "audio-log.txt"
 WATCHDOG_LOG = ROOT / "watchdog-log.txt"
 SYNC_SCRIPT = ROOT / "scripts" / "sync-audio.py"
-TASK_NAMES = ["DidiPodcast-SyncAudio", "DidiPodcast-Watchdog", "DidiPodcast-AudioServer", "podcast-audio-update", "podcast-transcript-update"]
+TASK_NAMES = ["DidiPodcast-SyncAudio", "DidiPodcast-Watchdog", "DidiPodcast-AudioServer","podcast-transcript-update"]
 
 
 def log(message):
