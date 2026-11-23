@@ -81,7 +81,7 @@ export function usePodcastSync() {
       const headers = { Authorization: `Bearer ${credential}`, 'Content-Type': 'application/json' }
       if (!keepalive) {
         const remoteResponse = await fetch('/api/sync', { headers, cache: 'no-store', signal: controller.signal })
-        if (!remoteResponse.ok) throw new Error(remoteResponse.status === 401 ? '同步密钥不正确，请重新输入' : remoteResponse.status === 503 ? '云同步服务尚未配置，数据仍保存在本地' : `读取失败（${remoteResponse.status}），请重试`)
+        if (!remoteResponse.ok) throw new Error(remoteResponse.status === 401 ? '同步口令不正确，请重新输入' : remoteResponse.status === 429 ? '尝试次数过多，请 10 分钟后再试' : remoteResponse.status === 503 ? '云同步服务尚未配置，数据仍保存在本地' : `读取失败（${remoteResponse.status}），请重试`)
         const remoteValue = await remoteResponse.json()
         const remote = remoteValue ? validateSyncData(remoteValue) : null
         if (generation !== generationRef.current) return
@@ -94,7 +94,7 @@ export function usePodcastSync() {
         method: 'POST', headers, body: JSON.stringify(sent), keepalive,
         signal: controller.signal,
       })
-      if (!response.ok) throw new Error(response.status === 401 ? '同步密钥不正确，请重新输入' : response.status === 503 ? '云同步服务尚未配置，数据仍保存在本地' : `保存失败（${response.status}），请重试`)
+      if (!response.ok) throw new Error(response.status === 401 ? '同步口令不正确，请重新输入' : response.status === 429 ? '尝试次数过多，请 10 分钟后再试' : response.status === 503 ? '云同步服务尚未配置，数据仍保存在本地' : `保存失败（${response.status}），请重试`)
       const result = await response.json() as { ok: boolean; data: SyncData }
       if (!result.ok || !result.data) throw new Error('同步响应无效，请重试')
       if (generation !== generationRef.current) return
@@ -117,7 +117,7 @@ export function usePodcastSync() {
     apply(initial, true)
     try {
       const saved = localStorage.getItem(SECRET_KEY) || ''
-      if (saved.length >= 32) { secretRef.current = saved; setSecret(saved) }
+      if (saved.length >= 4) { secretRef.current = saved; setSecret(saved) }
     } catch {}
     readyRef.current = true
     void synchronize(false, true)
@@ -145,7 +145,7 @@ export function usePodcastSync() {
 
   const configureSecret = useCallback((value: string) => {
     const trimmed = value.trim()
-    if (trimmed && trimmed.length < 32) { setStatus('同步密钥至少需要 32 个字符'); return false }
+    if (trimmed && trimmed.length < 4) { setStatus('同步口令至少需要 4 位'); return false }
     generationRef.current++
     requestRef.current?.abort()
     busyRef.current = false

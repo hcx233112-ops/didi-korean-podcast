@@ -505,15 +505,16 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
             ))}
           </div>
           <h3 className="font-semibold">云同步</h3>
-          <p className="text-[13px] mt-1" style={{ color: 'var(--text-2)' }}>各设备输入同一密钥，即可同步收藏和收听进度。备注只保存在当前设备。</p>
-          <label htmlFor="sync-secret" className="block text-[13px] mt-3" style={{ color: 'var(--text-2)' }}>同步密钥（至少 32 个字符）</label>
-          <input id="sync-secret" type="password" autoComplete="off" spellCheck={false} value={secretInput} onChange={e => setSecretInput(e.target.value)}
+          <p className="text-[13px] mt-1" style={{ color: 'var(--text-2)' }}>在每台设备输入同一个口令，收藏和收听进度就会自动同步。只需输入一次，之后会记住。</p>
+          <label htmlFor="sync-secret" className="block text-[13px] mt-3" style={{ color: 'var(--text-2)' }}>同步口令</label>
+          <input id="sync-secret" type="password" autoComplete="current-password" spellCheck={false} value={secretInput} onChange={e => setSecretInput(e.target.value)}
+            placeholder="至少 4 位" onKeyDown={e => { if (e.key === 'Enter') sync.configureSecret(secretInput) }}
             className="w-full rounded-xl p-3 mt-1.5 outline-none" style={{ background: 'var(--surface-2)', color: 'var(--text)' }} />
           <p role="status" className="text-[13px] mt-2" style={{ color: 'var(--text-2)' }}>{sync.status}</p>
           <div className="flex flex-wrap gap-2.5 mt-3">
-            <button className="tap rounded-xl px-4 py-2.5 font-semibold" style={{ background: 'var(--accent)', color: '#000' }} onClick={() => sync.configureSecret(secretInput)}>保存并同步</button>
-            {sync.secret && <button className="tap rounded-xl px-4 py-2.5" style={{ background: 'var(--surface-2)' }} onClick={() => { void syncNow(false, true) }}>重试同步</button>}
-            <button className="tap rounded-xl px-4 py-2.5" style={{ background: 'var(--surface-2)' }} onClick={() => { sync.configureSecret(''); setSecretInput('') }}>仅本地使用</button>
+            <button className="tap rounded-xl px-4 py-2.5 font-semibold" style={{ background: 'var(--accent)', color: '#000' }} onClick={() => sync.configureSecret(secretInput)}>{sync.secret ? '更换口令' : '开启同步'}</button>
+            {sync.secret && <button className="tap rounded-xl px-4 py-2.5" style={{ background: 'var(--surface-2)' }} onClick={() => { void syncNow(false, true) }}>立即同步</button>}
+            {sync.secret && <button className="tap rounded-xl px-4 py-2.5" style={{ background: 'var(--surface-2)' }} onClick={() => { sync.configureSecret(''); setSecretInput('') }}>关闭同步</button>}
           </div>
         </Sheet>
       )}

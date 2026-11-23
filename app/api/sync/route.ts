@@ -4,6 +4,11 @@ import { validateSyncData } from '../../../lib/sync-data'
 
 export const runtime = 'nodejs'
 const MAX_BYTES = 128 * 1024
+const MIN_SECRET = 4
+// A short passcode is safe only because wrong guesses are throttled globally (single-user site).
+const FAILURE_KEY = 'podcast-sync:failures'
+const MAX_FAILURES = 10
+const FAILURE_WINDOW_SECONDS = 600
 const JSON_HEADERS = { 'Cache-Control': 'private, no-store' }
 class SyncCapacityError extends Error {}
 
@@ -37,14 +42,24 @@ function response(body: unknown, status = 200) {
   return NextResponse.json(body, { status, headers: JSON_HEADERS })
 }
 
-function config(req: Request) {
+async function config(req: Request) {
   const secret = process.env.PODCAST_SYNC_SECRET
   const base = process.env.KV_REST_API_URL
   const token = process.env.KV_REST_API_TOKEN
-  if (!secret || secret.length < 32 || !base || !token) return { error: response({ error: '云同步尚未配置，本地数据已保留' }, 503) }
+  if (!secret || secret.length < MIN_SECRET || !base || !token) return { error: response({ error: '云同步尚未配置，本地数据已保留' }, 503) }
   const supplied = Buffer.from(req.headers.get('authorization') || '')
   const expected = Buffer.from(`Bearer ${secret}`)
-  if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) return { error: response({ error: '同步密钥不正确' }, 401) }
+  const locked = (count: unknown) => Number(count) > MAX_FAILURES
+  if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
+    let failures: unknown = 0
+    try {
+      failures = await redis(base, token, ['INCR', FAILURE_KEY])
+      if (Number(failures) === 1) await redis(base, token, ['EXPIRE', FAILURE_KEY, FAILURE_WINDOW_SECONDS])
+    } catch {}
+    return { error: locked(failures) ? response({ error: '尝试次数过多，请 10 分钟后再试' }, 429) : response({ error: '同步口令不正确' }, 401) }
+  }
+  // A correct guess during a lockout is still refused, so the lockout really bounds guessing.
+  try { if (locked(await redis(base, token, ['GET', FAILURE_KEY]))) return { error: response({ error: '尝试次数过多，请 10 分钟后再试' }, 429) } } catch {}
   const namespace = createHash('sha256').update(secret).digest('hex').slice(0, 32)
   return { base, token, key: `podcast-sync:v2:${namespace}` }
 }
@@ -80,7 +95,7 @@ async function readBoundedJson(req: Request) {
 }
 
 export async function GET(req: Request) {
-  const connection = config(req)
+  const connection = await config(req)
   if (connection.error) return connection.error
   try {
     const raw = await redis(connection.base!, connection.token!, ['GET', connection.key!])
@@ -89,7 +104,7 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const connection = config(req)
+  const connection = await config(req)
   if (connection.error) return connection.error
   let payload
   try { payload = validateSyncData(await readBoundedJson(req)) }

@@ -28,15 +28,15 @@ python -m pip install -r scripts/requirements-automation.txt
 ```text
 KV_REST_API_URL=<Redis REST HTTPS endpoint>
 KV_REST_API_TOKEN=<Redis REST token>
-PODCAST_SYNC_SECRET=<至少32个字符的随机密钥>
+PODCAST_SYNC_SECRET=<同步口令，至少4位>
 NEXT_PUBLIC_AUDIO_BASE=https://audio.yanxuan-kr.cn/
 ```
 
-`PODCAST_SYNC_SECRET` 是服务端变量，不能加 NEXT_PUBLIC_ 前缀或写进仓库。可在自己的终端用 `node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"` 生成，设置到部署环境后，所有自己的设备在页面的“云同步”设置中输入同一密钥。密钥保存在该浏览器本地，应只在自己的设备输入。这是私人单用户同步；不同访问者默认只能使用各自本地数据。
+`PODCAST_SYNC_SECRET` 是服务端变量，不能加 NEXT_PUBLIC_ 前缀或写进仓库。设置后在每台自己的设备上，于页面右上角头像 → 设置 → 云同步中输入同一口令，之后浏览器会记住。口令可以很短，因为服务端对错误口令做全局限流：10 分钟内错 10 次即锁定 10 分钟，锁定期间正确口令也会被拒绝。这是私人单用户同步；其他访问者只使用各自本地数据。
 
 接口要求 Authorization Bearer 密钥，使用该密钥的哈希生成独立 Redis 键，并原子合并带修改时间的记录。取消收藏与重置进度保留删除标记，旧设备不会凭更大播放位置复活旧数据。旧浏览器数据自动迁移；旧的未认证 `podcast-sync` 全局键不会自动导入，避免重新引入来源不明的数据。换密钥会切换云端命名空间，本地数据继续保留。
 
-没配置 KV/密钥返回 503，错误密钥返回 401，格式错误返回 400，过大数据返回 413，存储失败返回 502。前端显示失败并保留本地更改等待重试；无变化不反复写入，正常收听时按45秒节流，并在暂停或离开页面时尝试补写。
+没配置 KV/口令返回 503，错误口令返回 401，错误过多返回 429，格式错误返回 400，过大数据返回 413，存储失败返回 502。前端显示失败并保留本地更改等待重试；无变化不反复写入，正常收听时按45秒节流，并在暂停或离开页面时尝试补写。
 
 ## 自动化与媒体
 

@@ -45,7 +45,7 @@ test('API rejects unauthenticated and malformed writes and reports storage failu
     assert.equal((await POST(make(emptySyncData(), false))).status, 401)
     assert.equal((await POST(make({ arbitrary: 'overwrite' }))).status, 400)
     assert.equal((await POST(make(emptySyncData()))).status, 502)
-    assert.equal(commands[0][0], 'EVAL', 'server must merge atomically, not GET then SET')
+    assert.ok(commands.some(c => c[0] === 'EVAL') && !commands.some(c => c[0] === 'SET'), 'server must merge atomically, not GET then SET')
     assert.equal((await GET(new Request('http://localhost/api/sync', { headers: { authorization: `Bearer ${'a'.repeat(32)}` } }))).status, 502)
     delete process.env.KV_REST_API_URL
     assert.equal((await POST(make(emptySyncData()))).status, 503)
@@ -81,5 +81,30 @@ test('merged capacity exhaustion is explicit and never reported as a successful 
   try {
     const response = await POST(new Request('http://localhost/api/sync', { method: 'POST', headers: { authorization: `Bearer ${'a'.repeat(32)}` }, body: JSON.stringify(emptySyncData()) }))
     assert.equal(response.status, 413)
+  } finally { global.fetch = originalFetch }
+})
+
+test('a short passcode is protected by a global lockout on repeated wrong guesses', async () => {
+  process.env.PODCAST_SYNC_SECRET = '2580'
+  process.env.KV_REST_API_URL = 'https://mock.invalid'
+  process.env.KV_REST_API_TOKEN = 'mock'
+  const { GET } = require('../app/api/sync/route.ts')
+  const originalFetch = global.fetch
+  let failures = 0
+  global.fetch = async (_url, options) => {
+    const [command, key] = JSON.parse(options.body)
+    if (command === 'INCR') return Response.json({ result: ++failures })
+    if (command === 'EXPIRE') return Response.json({ result: 1 })
+    if (command === 'GET' && key === 'podcast-sync:failures') return Response.json({ result: failures ? String(failures) : null })
+    return Response.json({ result: null })
+  }
+  const get = code => GET(new Request('http://localhost/api/sync', { headers: { authorization: `Bearer ${code}` } }))
+  try {
+    assert.equal((await get('2580')).status, 200)
+    for (let i = 0; i < 10; i++) assert.equal((await get(String(1000 + i))).status, 401)
+    assert.equal((await get('9999')).status, 429)
+    assert.equal((await get('2580')).status, 429, 'the right code must not slip through during a lockout')
+    failures = 0
+    assert.equal((await get('2580')).status, 200)
   } finally { global.fetch = originalFetch }
 })

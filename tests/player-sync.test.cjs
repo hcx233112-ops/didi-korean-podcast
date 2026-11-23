@@ -103,7 +103,7 @@ test('authentication failures remain visible and do not claim successful synchro
   const app=harness()
   try{
     const api=app.render();api.configureSecret('a'.repeat(32));await new Promise(resolve=>setImmediate(resolve))
-    assert.match(app.render().status,/密钥不正确/)
+    assert.match(app.render().status,/口令不正确/)
     assert.equal(JSON.parse(localStorage.getItem('podcast-sync-v2')).version,2)
   }finally{app.cleanup();Object.assign(global,original)}
 })
