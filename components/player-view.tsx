@@ -85,7 +85,8 @@ function SeekBar({ elapsed, duration, onSeek }: { elapsed: number; duration: num
         onPointerDown={() => setDrag(value)}
         onChange={e => { const v = Number(e.target.value); if (drag === null) onSeek(v, true); else { setDrag(v); onSeek(v, false) } }}
         onPointerUp={e => end(Number((e.target as HTMLInputElement).value))}
-        onPointerCancel={() => setDrag(null)} />
+        // An interrupted drag must still release the player's seeking state.
+        onPointerCancel={() => { if (drag !== null) end(drag) }} onBlur={() => { if (drag !== null) end(drag) }} />
       <div className="flex justify-between text-[12px] tabular-nums mt-0.5" style={{ color: 'var(--text-2)' }}>
         <span>{formatTime(value * duration)}</span>
         <span>-{formatTime(Math.max(0, duration - value * duration))}</span>

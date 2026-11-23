@@ -90,3 +90,18 @@ test('an unconfigured real sync endpoint returns a failure instead of pretending
   expect(response.status()).toBe(503)
   expect(await response.json()).toHaveProperty('error')
 })
+
+test('autoplay skips finished episodes, and tapping the loaded episode opens the player instead of pausing', async ({ page }) => {
+  const third = { id: 'wxyzabcdefg', title: 'Third episode', published: '2026-10-30', thumbnail: '/x.jpg', duration: 2000 }
+  await page.route('**/data/videos/didi.json', route => route.fulfill({ json: { channelName: 'Test', videos: [first, second, third] } }))
+  await page.addInitScript(() => {
+    localStorage.setItem('podcast-sync-v2', JSON.stringify({ version: 2, favorites: {}, progress: { lmnopqrstuv: { pos: 1990, dur: 2000, updatedAt: 1 } } }))
+  })
+  await page.goto('/')
+  await page.getByRole('button', { name: '播放 First episode', exact: true }).click()
+  await page.getByRole('button', { name: '播放 First episode', exact: true }).click()
+  await expect(page.getByRole('dialog', { name: '正在播放' })).toBeVisible()
+  expect(await page.locator('audio').evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(false)
+  await page.locator('audio').evaluate(audio => audio.dispatchEvent(new Event('ended')))
+  await expect(page.getByRole('dialog', { name: '正在播放' })).toContainText('Third episode')
+})

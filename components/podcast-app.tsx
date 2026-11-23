@@ -83,7 +83,16 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
   const lastPosRef = useRef<number | null>(null)
   const pendingListenRef = useRef(0)
   const warmedRef = useRef<string | null>(null)
-  const celebratedRef = useRef<Set<string>>(new Set())
+  const lastFractionRef = useRef(-1)
+  // Re-read on return: an iOS home-screen app can sit in the background for days.
+  const [clock, setClock] = useState(() => Date.now())
+  useEffect(() => {
+    const refresh = () => { if (document.visibilityState === 'visible') setClock(Date.now()) }
+    refresh()
+    const interval = setInterval(refresh, 5 * 60_000)
+    document.addEventListener('visibilitychange', refresh)
+    return () => { clearInterval(interval); document.removeEventListener('visibilitychange', refresh) }
+  }, [])
 
   useEffect(() => { stopAfterCurrentRef.current = stopAfterCurrent }, [stopAfterCurrent])
   useEffect(() => { videosRef.current = videos }, [videos])
@@ -164,10 +173,14 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
     return () => clearTimeout(t)
   }, [toast])
 
-  function nextOf(id: string | null, step: 1 | -1) {
+  function nextOf(id: string | null, step: 1 | -1, skipFinished = false) {
     const list = videosRef.current
     const idx = list.findIndex(v => v.id === id)
-    return idx >= 0 ? list[idx + step] ?? null : null
+    if (idx < 0) return null
+    for (let i = idx + step; i >= 0 && i < list.length; i += step) {
+      if (!skipFinished || (videoProgressRef.current[list[i].id] ?? 0) < DONE_THRESHOLD) return list[i]
+    }
+    return null
   }
 
   function tick() {
@@ -181,13 +194,15 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
     }
     lastPosRef.current = paused ? null : cur
     const id = currentIdRef.current
-    if (id && dur > 0 && cur / dur >= DONE_THRESHOLD && !celebratedRef.current.has(id)) {
-      celebratedRef.current.add(id)
-      if ((videoProgressRef.current[id] ?? 0) < DONE_THRESHOLD) showToast('又听完一集 🎉')
+    if (!paused && dur > 0) {
+      // Celebrate only a crossing heard in playback, not a seek or a resume past the line.
+      const fraction = cur / dur, last = lastFractionRef.current
+      if (last >= 0 && last < DONE_THRESHOLD && fraction >= DONE_THRESHOLD && fraction - last < 0.02) showToast('又听完一集 🎉')
+      lastFractionRef.current = fraction
     }
     if (!paused && dur > 0 && cur > 20 && id && warmedRef.current !== id) {
       warmedRef.current = id
-      const next = nextOf(id, 1)
+      const next = nextOf(id, 1, true)
       if (next) warmEpisode(next.id)
     }
     if (document.visibilityState === 'hidden') { persistCurrent(); return }
@@ -224,7 +239,7 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
       checkTimer()
       if (blockAutoAdvanceRef.current) { setPlaying(false); return }
       if (stopAfterCurrentRef.current) { setStopAfterCurrent(false); setPlaying(false); return }
-      const next = nextOf(currentIdRef.current, 1)
+      const next = nextOf(currentIdRef.current, 1, true)
       if (next) playRef.current(next, true)
       else setPlaying(false)
     })
@@ -248,10 +263,6 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
     navigator.mediaSession.setActionHandler('seekbackward', () => skip(-15))
     navigator.mediaSession.setActionHandler('seekforward', () => skip(30))
     navigator.mediaSession.setActionHandler('seekto', d => { if (audioRef.current && typeof d.seekTime === 'number') audioRef.current.currentTime = d.seekTime })
-    try {
-      navigator.mediaSession.setActionHandler('previoustrack', () => { const v = nextOf(currentIdRef.current, -1); if (v) playRef.current(v) })
-      navigator.mediaSession.setActionHandler('nexttrack', () => { const v = nextOf(currentIdRef.current, 1); if (v) playRef.current(v) })
-    } catch {}
   }
 
   function play(video: Video, automatic = false) {
@@ -264,6 +275,7 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
     a.pause()
     currentIdRef.current = video.id
     lastPosRef.current = null
+    lastFractionRef.current = -1
     const saved = getProgress(video.id)
     resumeAtRef.current = saved ? resumePosition(saved.pos, saved.dur, saved.updatedAt, Date.now()) : 0
     setPlaybackError(null)
@@ -395,16 +407,20 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
   }, [segments, elapsed])
 
   // Stable callbacks keep memoized rows from re-rendering every second.
-  const handlers = useRef({ play, togglePlay })
-  handlers.current = { play, togglePlay }
+  const handlers = useRef({ play, togglePlay, openPlayer })
+  handlers.current = { play, togglePlay, openPlayer }
+  // Tapping the episode that is already loaded opens it rather than pausing it.
   const onPlay = useCallback((v: Video) => {
+    if (currentIdRef.current === v.id && audioRef.current) handlers.current.openPlayer(0)
+    else handlers.current.play(v)
+  }, [])
+  const onContinue = useCallback((v: Video) => {
     if (currentIdRef.current === v.id && audioRef.current) handlers.current.togglePlay()
     else handlers.current.play(v)
   }, [])
   const onToggleFav = useCallback((id: string) => sync.toggleFavorite(id), [sync.toggleFavorite]) // eslint-disable-line react-hooks/exhaustive-deps
   const onResetProgress = useCallback((id: string) => {
-    if (currentIdRef.current === id && audioRef.current) audioRef.current.currentTime = 0
-    celebratedRef.current.delete(id)
+    if (currentIdRef.current === id && audioRef.current) { audioRef.current.currentTime = 0; lastFractionRef.current = -1 }
     sync.resetProgress(id)
   }, [sync.resetProgress]) // eslint-disable-line react-hooks/exhaustive-deps
   const onSeekSegment = useCallback((start: number) => {
@@ -416,11 +432,13 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
   const onOpenSettings = useCallback(() => { setSecretInput(sync.secret); openSheet('settings') }, [sync.secret])
   const onRetryList = useCallback(() => setListRetry(v => v + 1), [])
 
-  const today = new Date()
-  const homeStats = useMemo(() => ({
-    week: weekSeconds(stats, today), streak: streak(stats, today),
-    finished: Object.values(videoProgress).filter(p => p >= DONE_THRESHOLD).length,
-  }), [stats, videoProgress]) // eslint-disable-line react-hooks/exhaustive-deps
+  const homeStats = useMemo(() => {
+    const today = new Date(clock)
+    return {
+      week: weekSeconds(stats, today), streak: streak(stats, today),
+      finished: Object.values(videoProgress).filter(p => p >= DONE_THRESHOLD).length,
+    }
+  }, [stats, videoProgress, clock])
 
   const timerLabel = timeLeft !== null ? formatTime(timeLeft) : stopAfterCurrent ? '本集结束' : null
   const progress = duration > 0 ? elapsed / duration : 0
@@ -432,7 +450,7 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
 
       <HomeView hydrated={hydrated} videos={videos} details={videoDetails} favorites={favorites} notes={notes}
         currentId={current?.id ?? null} playing={playing} stats={homeStats} channel={channel}
-        listError={listError} onRetryList={onRetryList} onPlay={onPlay} onToggleFav={onToggleFav}
+        listError={listError} onRetryList={onRetryList} onPlay={onPlay} onContinue={onContinue} now={clock} onToggleFav={onToggleFav}
         onResetProgress={onResetProgress} onOpenSettings={onOpenSettings} />
 
       {playbackError && (

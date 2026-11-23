@@ -26,6 +26,8 @@ interface Props {
   listError: string | null
   onRetryList: () => void
   onPlay: (video: Video) => void
+  onContinue: (video: Video) => void
+  now: number
   onToggleFav: (id: string) => void
   onResetProgress: (id: string) => void
   onOpenSettings: () => void
@@ -146,7 +148,7 @@ export function HomeView(props: Props) {
   const [query, setQuery] = useState('')
   const [searching, setSearching] = useState(false)
   const deferredQuery = useDeferredValue(query)
-  const now = useMemo(() => new Date(), [hydrated]) // eslint-disable-line react-hooks/exhaustive-deps
+  const now = useMemo(() => new Date(props.now), [props.now])
 
   const sections = useMemo(() => {
     if (!hydrated) return null
@@ -201,7 +203,7 @@ export function HomeView(props: Props) {
       <div className="mt-5">
         {!sections ? <ContinueSkeleton /> : sections.cont && (
           <ContinueCard video={sections.cont.video} detail={details[sections.cont.video.id]} resume={sections.cont.resume}
-            isCurrent={currentId === sections.cont.video.id} playing={playing} onPlay={onPlay} />
+            isCurrent={currentId === sections.cont.video.id} playing={playing} onPlay={props.onContinue} />
         )}
       </div>
 
