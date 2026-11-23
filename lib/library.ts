@@ -1,4 +1,4 @@
-export interface Video { id: string; title: string; published: string; thumbnail: string; duration?: number }
+export interface Video { id: string; title: string; published: string; thumbnail: string; duration?: number; channel?: string }
 export interface ProgressDetail { pos: number; dur: number; updatedAt: number }
 
 export const DONE_THRESHOLD = 0.9
@@ -38,12 +38,22 @@ export function inProgress(videos: Video[], details: Record<string, ProgressDeta
   return inProgressEntries(videos, details).filter(v => v.id !== excludeId).slice(0, limit)
 }
 
-/** Newest episode, if it is recent and has never been played. */
-export function newEpisode(videos: Video[], details: Record<string, ProgressDetail>, now: number, excludeId?: string) {
-  const newest = videos[0]
-  if (!newest || newest.id === excludeId || details[newest.id]) return null
-  const published = Date.parse(newest.published)
-  return Number.isFinite(published) && now - published <= 14 * DAY ? newest : null
+/** Recent episodes that have never been played, newest first. */
+export function newEpisodes(videos: Video[], details: Record<string, ProgressDetail>, now: number, excludeId?: string, limit = 3) {
+  return videos.filter(v => {
+    const published = Date.parse(v.published)
+    return v.id !== excludeId && !details[v.id] && Number.isFinite(published) && now - published <= 14 * DAY
+  }).slice(0, limit)
+}
+
+/** All channels as one list, newest first, each episode tagged with its channel. */
+export function mergeChannels(byChannel: Record<string, Video[]>) {
+  const seen = new Set<string>()
+  const all: Video[] = []
+  for (const [channel, list] of Object.entries(byChannel)) {
+    for (const video of list) if (!seen.has(video.id)) { seen.add(video.id); all.push({ ...video, channel }) }
+  }
+  return all.sort((a, b) => b.published.localeCompare(a.published))
 }
 
 function hash(text: string) {

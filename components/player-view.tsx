@@ -97,6 +97,7 @@ function SeekBar({ elapsed, duration, onSeek }: { elapsed: number; duration: num
 
 export interface FullPlayerProps {
   video: Video
+  channelName: string
   initialPage: 0 | 1
   closing: boolean
   tint: string
@@ -215,7 +216,7 @@ export function FullPlayer(p: FullPlayerProps) {
           <div className="flex items-start gap-3">
             <div className="flex-1 min-w-0">
               <p className="text-[21px] font-bold leading-snug line-clamp-2">{p.video.title}</p>
-              <p className="text-[14px] mt-1" style={{ color: 'var(--text-2)' }}>Didi의 한국문화 Podcast</p>
+              <p className="text-[14px] mt-1" style={{ color: 'var(--text-2)' }}>{p.channelName}</p>
             </div>
             <button aria-label={p.isFav ? '取消收藏当前节目' : '收藏当前节目'} aria-pressed={p.isFav} onClick={p.onToggleFav}
               className="tap w-11 h-11 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(255,255,255,.1)', color: p.isFav ? 'var(--accent)' : 'var(--text)' }}>

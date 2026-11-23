@@ -19,12 +19,17 @@ test('continue picks the latest unfinished episode, else the newest unstarted on
   assert.deepEqual(lib.inProgress(videos, details, id('d')).map(x => x.title), ['c'])
 })
 
-test('new episode is only the recent, never-played newest', () => {
-  const now = Date.parse('2026-11-24')
-  assert.equal(lib.newEpisode(videos, {}, now)?.title, 'a')
-  assert.equal(lib.newEpisode(videos, { [id('a')]: { pos: 1, dur: 9, updatedAt: 1 } }, now), null)
-  assert.equal(lib.newEpisode(videos, {}, Date.parse('2027-01-30')), null)
-  assert.equal(lib.newEpisode(videos, {}, now, id('a')), null)
+test('new episodes are recent and never played, across channels', () => {
+  const now = Date.parse('2026-11-19')
+  assert.deepEqual(lib.newEpisodes(videos, {}, now).map(v => v.title), ['a', 'b'])
+  assert.deepEqual(lib.newEpisodes(videos, { [id('a')]: { pos: 1, dur: 9, updatedAt: 1 } }, now).map(v => v.title), ['b'])
+  assert.deepEqual(lib.newEpisodes(videos, {}, Date.parse('2027-01-30')), [])
+  assert.deepEqual(lib.newEpisodes(videos, {}, now, id('a')).map(v => v.title), ['b'])
+})
+
+test('channels merge newest first, tagged, without duplicates', () => {
+  const merged = lib.mergeChannels({ didi: [videos[0], videos[2]], luke: [videos[1], videos[0]] })
+  assert.deepEqual(merged.map(v => [v.title, v.channel]), [['a', 'didi'], ['b', 'luke'], ['c', 'didi']])
 })
 
 test('daily pick is stable for a day and avoids played and newest episodes', () => {

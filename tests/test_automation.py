@@ -287,6 +287,26 @@ class AutomationRegressionTests(unittest.TestCase):
         self.assertTrue(module.readable(Path(__file__)))
         self.assertFalse(module.readable(Path(tmp) / "gone.m4a"))
 
+    def test_english_caption_lines_merge_into_sentences(self):
+        module = load("generate-transcripts")
+        lines = [("been no episodes for", 0), ("two weeks, because I was ill.", 2000), ("Um I've been in bed", 4000), ("over there.", 6000), ("Right?", 7000)]
+        merged = module.merge_sentences([{"start_ms": t, "end_ms": t + 1500, "text": x} for x, t in lines])
+        self.assertEqual([m["text"] for m in merged], ["been no episodes for two weeks, because I was ill.", "Um I've been in bed over there.", "Right?"])
+        self.assertEqual((merged[1]["start_ms"], merged[1]["end_ms"]), (4000, 7500))
+        long = [{"start_ms": i * 1000, "end_ms": i * 1000 + 900, "text": "word " * 10} for i in range(10)]
+        self.assertTrue(all(len(m["text"]) < 200 for m in module.merge_sentences(long)))
+
+    def test_generated_subtitles_record_and_translate_from_the_channel_language(self):
+        module = load("generate-transcripts")
+        segments = [{"start_ms": 0, "end_ms": 1000, "text": "Hello there."}]
+        with patch.object(module, "fetch_subtitles_ytdlp", return_value=segments) as fetch, patch.object(module, "translate_all", return_value=["你好。"]) as translate:
+            self.assertEqual(module.generate("abcdefghijk", lang="en"), "ok")
+        fetch.assert_called_once_with("abcdefghijk", "en")
+        translate.assert_called_once_with(["Hello there."], "en")
+        saved = json.loads((module.TRANSCRIPTS_DIR / "abcdefghijk.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["lang"], "en")
+        self.assertEqual(saved["segments"][0], {"start": 0.0, "end": 1.0, "ko": "Hello there.", "zh": "你好。"})
+
     def test_pending_translation_includes_blank_chinese(self):
         module = load("retranslate")
         self.assertTrue(module._pending({"ko": "한국어", "zh": ""}))

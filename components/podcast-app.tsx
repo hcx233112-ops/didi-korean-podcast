@@ -4,13 +4,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import channelsData from '@/data/channels.json'
 import { usePodcastSync } from '@/hooks/use-podcast-sync'
 import { coverColor } from '@/lib/cover-color'
-import { DONE_THRESHOLD, type Video, formatTime, resumePosition } from '@/lib/library'
+import { DONE_THRESHOLD, type Video, formatTime, mergeChannels, resumePosition } from '@/lib/library'
 import { STATS_KEY, type ListeningStats, addListening, readStats, streak, weekSeconds } from '@/lib/listening-stats'
 import { createPlaybackRequester, createProgressSaver, createTranscriptLoader, remainingTimerSeconds } from '@/lib/player-runtime'
 import { type Channel, HomeView } from './home-view'
 import { FullPlayer, MiniPlayer, Sheet, TimerOptions, type TranscriptSegment } from './player-view'
 
 const channels: Channel[] = channelsData
+const channelOf = (video: Video) => channels.find(c => c.id === video.channel) ?? channels[0]
 const SPEEDS = [0.8, 1, 1.2, 1.5, 2]
 const RAW_AUDIO_BASE = process.env.NEXT_PUBLIC_AUDIO_BASE || '/audio/'
 const AUDIO_BASE = RAW_AUDIO_BASE.endsWith('/') ? RAW_AUDIO_BASE : RAW_AUDIO_BASE + '/'
@@ -28,8 +29,8 @@ function warmEpisode(id: string) {
 type SheetName = 'timer' | 'note' | 'settings'
 
 export default function PodcastApp({ initialVideos }: { initialVideos: Record<string, Video[]> }) {
-  const channel = channels[0]
-  const [videos, setVideos] = useState<Video[]>(initialVideos[channel.id] ?? [])
+  const [byChannel, setByChannel] = useState(initialVideos)
+  const videos = useMemo(() => mergeChannels(byChannel), [byChannel])
   const [listError, setListError] = useState<string | null>(null)
   const [listRetry, setListRetry] = useState(0)
   const [hydrated, setHydrated] = useState(false)
@@ -101,18 +102,20 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {})
   }, [])
 
-  // The list is prerendered; this only picks up episodes published after the last deploy.
+  // The lists are prerendered; this only picks up episodes published after the last deploy.
   useEffect(() => {
     const controller = new AbortController()
-    fetch(`/data/videos/${channel.id}.json`, { signal: controller.signal, cache: 'no-store' })
-      .then(r => { if (!r.ok) throw new Error(); return r.json() })
-      .then((data: { videos?: Video[] }) => {
-        if (!Array.isArray(data.videos)) throw new Error()
-        setVideos(data.videos); setListError(null)
-      })
-      .catch(error => { if (error?.name !== 'AbortError') setListError('节目列表加载失败，请检查网络后重试') })
+    for (const { id } of channels) {
+      fetch(`/data/videos/${id}.json`, { signal: controller.signal, cache: 'no-store' })
+        .then(r => { if (!r.ok) throw new Error(); return r.json() })
+        .then((data: { videos?: Video[] }) => {
+          if (!Array.isArray(data.videos)) throw new Error()
+          setByChannel(prev => ({ ...prev, [id]: data.videos! })); setListError(null)
+        })
+        .catch(error => { if (error?.name !== 'AbortError') setListError('节目列表加载失败，请检查网络后重试') })
+    }
     return () => controller.abort()
-  }, [channel.id, listRetry])
+  }, [listRetry])
 
   useEffect(() => {
     try {
@@ -173,8 +176,10 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
     return () => clearTimeout(t)
   }, [toast])
 
+  /** Neighbours within the same channel, so a Korean episode is followed by Korean. */
   function nextOf(id: string | null, step: 1 | -1, skipFinished = false) {
-    const list = videosRef.current
+    const channel = videosRef.current.find(v => v.id === id)?.channel
+    const list = videosRef.current.filter(v => v.channel === channel)
     const idx = list.findIndex(v => v.id === id)
     if (idx < 0) return null
     for (let i = idx + step; i >= 0 && i < list.length; i += step) {
@@ -255,7 +260,7 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
   function setupMediaSession(video: Video) {
     if (!('mediaSession' in navigator)) return
     navigator.mediaSession.metadata = new MediaMetadata({
-      title: video.title, artist: channel.name,
+      title: video.title, artist: channelOf(video).name,
       artwork: [{ src: video.thumbnail.replace('mqdefault', 'hqdefault'), sizes: '480x360', type: 'image/jpeg' }],
     })
     navigator.mediaSession.setActionHandler('play', () => requestPlayback())
@@ -449,7 +454,7 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
       <div className="fixed top-0 inset-x-0 z-20 glass" style={{ height: 'env(safe-area-inset-top)' }} />
 
       <HomeView hydrated={hydrated} videos={videos} details={videoDetails} favorites={favorites} notes={notes}
-        currentId={current?.id ?? null} playing={playing} stats={homeStats} channel={channel}
+        currentId={current?.id ?? null} playing={playing} stats={homeStats} channels={channels}
         listError={listError} onRetryList={onRetryList} onPlay={onPlay} onContinue={onContinue} now={clock} onToggleFav={onToggleFav}
         onResetProgress={onResetProgress} onOpenSettings={onOpenSettings} />
 
@@ -469,7 +474,7 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
       )}
 
       {current && player && (
-        <FullPlayer video={current} initialPage={player.page} closing={closingPlayer} tint={tint}
+        <FullPlayer video={current} channelName={channelOf(current).name} initialPage={player.page} closing={closingPlayer} tint={tint}
           playing={playing} elapsed={elapsed} duration={duration} rate={rate} timerLabel={timerLabel}
           isFav={favorites.has(current.id)} hasNote={!!notes[current.id]}
           segments={segments} transcriptLoading={transcriptLoading} transcriptError={transcriptError}

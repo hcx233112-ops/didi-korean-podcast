@@ -14,6 +14,21 @@
       "PLekI352WvEBOzieG5X5SzFhL72eix2EGX",
       "PLekI352WvEBPAgoMY2dl5_5Ml37M9nSLZ",
       "PLekI352WvEBPhAcLdV-4pvZOB3AzAE7T4"
-    ]
+    ],
+    "lang": "ko"
+  },
+  {
+    "id": "luke",
+    "name": "Luke's English Podcast",
+    "description": "英语播客",
+    "initial": "L",
+    "color": "#ff9f0a",
+    "lang": "en",
+    "channelId": "UC2L7vR43LKuBXXV2AentEMw",
+    "playlists": [
+      "UU2L7vR43LKuBXXV2AentEMw"
+    ],
+    "limit": 150,
+    "minDuration": 600
   }
 ]

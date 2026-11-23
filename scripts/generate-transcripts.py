@@ -12,48 +12,73 @@ from retranslate import translate_all
 ROOT = Path(__file__).resolve().parent.parent
 TRANSCRIPTS_DIR = ROOT / "public" / "data" / "transcripts"
 CHANNELS_DIR = ROOT / "public" / "data" / "videos"
+CHANNELS_FILE = ROOT / "data" / "channels.json"
+# Preferred tracks first: a creator's own captions beat the auto-generated ones.
+SUB_LANGS = {"ko": ["ko"], "en": ["en-GB", "en-US", "en"]}
+
+
+def channel_languages():
+    return {c["id"]: c.get("lang", "ko") for c in read_json(CHANNELS_FILE, [])}
 
 
 def load_all_videos():
+    languages = channel_languages()
     videos = {}
     for path in CHANNELS_DIR.glob("*.json"):
         for video in json.loads(path.read_text(encoding="utf-8")).get("videos", []):
-            videos[video["id"]] = video
+            videos[video["id"]] = {**video, "lang": languages.get(path.stem, "ko")}
     return list(videos.values())
 
 
-def fetch_subtitles_ytdlp(video_id):
+def merge_sentences(segments, max_ms=15000, max_chars=180):
+    """Auto captions arrive as screen lines; translate whole sentences instead of fragments."""
+    merged = []
+    for segment in segments:
+        last = merged[-1] if merged else None
+        open_sentence = last and not re.search(r"[.?!…]['\"”)]?$", last["text"])
+        if open_sentence and segment["end_ms"] - last["start_ms"] <= max_ms and len(last["text"]) + len(segment["text"]) < max_chars:
+            last["text"] += " " + segment["text"]
+            last["end_ms"] = max(last["end_ms"], segment["end_ms"])
+        else:
+            merged.append(dict(segment))
+    return merged
+
+
+def fetch_subtitles_ytdlp(video_id, lang="ko"):
     # A subprocess can actually be killed; a Future timeout cannot stop its thread.
     with tempfile.TemporaryDirectory(prefix="podcast-subs-") as temporary:
         result = subprocess.run([
             sys.executable, "-m", "yt_dlp", "--skip-download", "--write-subs", "--write-auto-subs",
-            "--sub-langs", "ko", "--sub-format", "json3", "--socket-timeout", "20",
+            "--sub-langs", ",".join(SUB_LANGS.get(lang, [lang])), "--sub-format", "json3", "--socket-timeout", "20",
             "--retries", "2", "--no-playlist", "--no-warnings", "--quiet",
             "-o", str(Path(temporary) / "%(id)s.%(ext)s"),
             f"https://www.youtube.com/watch?v={video_id}",
         ], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180, creationflags=NO_WINDOW)
         if result.returncode:
             raise RuntimeError(f"字幕下载失败: {result.stderr[-600:]}")
-        files = list(Path(temporary).glob("*.json3"))
-        if not files:
+        files = {path.suffixes[-2].lstrip("."): path for path in Path(temporary).glob("*.json3") if len(path.suffixes) >= 2}
+        chosen = next((files[code] for code in SUB_LANGS.get(lang, [lang]) if code in files), next(iter(files.values()), None))
+        if not chosen:
             return None
-        data = json.loads(files[0].read_text(encoding="utf-8"))
+        data = json.loads(chosen.read_text(encoding="utf-8"))
     segments = []
     for event in data.get("events", []):
         text = "".join(s.get("utf8", "") for s in event.get("segs", [])).replace("\n", " ").strip()
         if text:
             start = event.get("tStartMs", 0)
             segments.append({"start_ms": start, "end_ms": start + event.get("dDurationMs", 0), "text": text})
+    if lang != "ko":
+        segments = merge_sentences(segments)
     return segments or None
 
 
-def generate(video_id, title="", force=False):
+def generate(video_id, title="", force=False, lang="ko"):
     if not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):
         raise ValueError("Invalid YouTube video ID")
     out = TRANSCRIPTS_DIR / f"{video_id}.json"
     if not should_generate(out, force=force):
         return "skip"
-    segments = fetch_subtitles_ytdlp(video_id)
+    segments = fetch_subtitles_ytdlp(video_id, lang)
     if segments is None:
         # Never replace previously working subtitles with a transient negative result.
         previous = read_json(out, {})
@@ -62,10 +87,11 @@ def generate(video_id, title="", force=False):
         atomic_json(out, {"videoId": video_id, "segments": [], "error": "no_transcript", "checked_at": utc_now()})
         return "no_transcript"
     texts = [s["text"] for s in segments]
-    translated = translate_all(texts)
+    translated = translate_all(texts, lang)
     if len(translated) != len(segments):
         raise RuntimeError("翻译响应数量不一致")
-    result = {"videoId": video_id, "segments": [
+    # "ko" holds the original-language line for every channel; "lang" names that language.
+    result = {"videoId": video_id, "lang": lang, "segments": [
         {"start": round(s["start_ms"] / 1000, 2), "end": round(s["end_ms"] / 1000, 2), "ko": text, "zh": zh or text}
         for s, text, zh in zip(segments, texts, translated)
     ]}
@@ -86,7 +112,7 @@ def main(argv=None):
             if ids and video["id"] not in ids:
                 continue
             try:
-                result = generate(video["id"], video.get("title", ""), force=bool(ids))
+                result = generate(video["id"], video.get("title", ""), force=bool(ids), lang=video.get("lang", "ko"))
                 counts[result] += 1
                 if result != "skip":
                     print(f"{video['id']}: {result}", flush=True)

@@ -20,12 +20,12 @@ TRANSCRIPTS_DIR = Path(__file__).parent.parent / "public" / "data" / "transcript
 WORKERS = 6  # 并发请求数（dict-chrome-ex 端点，6 并发实测不触发限流）
 
 
-def gtrans(text):
+def gtrans(text, source="ko"):
     for attempt in range(3):
         try:
             r = requests.get(
                 "https://translate.googleapis.com/translate_a/single",
-                params={"client": "dict-chrome-ex", "sl": "ko", "tl": "zh-CN", "dt": "t", "q": text},
+                params={"client": "dict-chrome-ex", "sl": source, "tl": "zh-CN", "dt": "t", "q": text},
                 headers={"User-Agent": "Mozilla/5.0"},
                 timeout=(5, 20),
             )
@@ -42,10 +42,10 @@ def gtrans(text):
             time.sleep(1 + attempt)
 
 
-def translate_all(texts):
+def translate_all(texts, source="ko"):
     results = [None] * len(texts)
     with ThreadPoolExecutor(max_workers=WORKERS) as ex:
-        futures = {ex.submit(gtrans, t): i for i, t in enumerate(texts)}
+        futures = {ex.submit(gtrans, t, source): i for i, t in enumerate(texts)}
         for f in as_completed(futures):
             results[futures[f]] = f.result()
     return results
@@ -64,7 +64,7 @@ def process_file(path, data):
     segs = data.get("segments", [])
     indices  = [i for i, s in enumerate(segs) if _pending(segs[i])]
     ko_texts = [segs[i]["ko"] for i in indices]
-    zh_texts = translate_all(ko_texts)
+    zh_texts = translate_all(ko_texts, data.get("lang", "ko"))
     if len(zh_texts) != len(indices):
         raise ValueError("translation count mismatch")
     translated = failed = 0

@@ -3,11 +3,11 @@
 import { memo, useDeferredValue, useMemo, useState } from 'react'
 import {
   DONE_THRESHOLD, type ProgressDetail, type Video, dailyPick, dayKey, formatDuration, formatTime, greeting,
-  groupByMonth, inProgress, newEpisode, pickContinue, progressOf,
+  groupByMonth, inProgress, newEpisodes, pickContinue, progressOf,
 } from '@/lib/library'
 import { CheckIcon, HeartIcon, PauseIcon, PlayIcon, ProgressRing, SearchIcon, ShuffleIcon } from './icons'
 
-export interface Channel { id: string; name: string; description: string; initial: string; color: string; avatar?: string }
+export interface Channel { id: string; name: string; description: string; initial: string; color: string; avatar?: string; lang?: string }
 type Filter = 'all' | 'unplayed' | 'fav' | 'done'
 const FILTERS: { key: Filter; label: string }[] = [
   { key: 'all', label: '全部' }, { key: 'unplayed', label: '未听' }, { key: 'fav', label: '收藏' }, { key: 'done', label: '已听完' },
@@ -22,7 +22,7 @@ interface Props {
   currentId: string | null
   playing: boolean
   stats: { week: number; streak: number; finished: number }
-  channel: Channel
+  channels: Channel[]
   listError: string | null
   onRetryList: () => void
   onPlay: (video: Video) => void
@@ -99,8 +99,8 @@ function ContinueSkeleton() {
   return <div className="px-5"><div className="skeleton rounded-[26px]" style={{ height: 128 }} /></div>
 }
 
-const VideoRow = memo(function VideoRow({ video, isCurrent, playing, isFav, detail, note, onPlay, onToggleFav, onResetProgress }: {
-  video: Video; isCurrent: boolean; playing: boolean; isFav: boolean; detail?: ProgressDetail; note?: string
+const VideoRow = memo(function VideoRow({ video, channelLabel, isCurrent, playing, isFav, detail, note, onPlay, onToggleFav, onResetProgress }: {
+  video: Video; channelLabel?: string; isCurrent: boolean; playing: boolean; isFav: boolean; detail?: ProgressDetail; note?: string
   onPlay: (v: Video) => void; onToggleFav: (id: string) => void; onResetProgress: (id: string) => void
 }) {
   const p = progressOf(detail)
@@ -119,6 +119,7 @@ const VideoRow = memo(function VideoRow({ video, isCurrent, playing, isFav, deta
           </p>
           <p className="text-[12px] mt-1 flex items-center gap-1.5 tabular-nums" style={{ color: 'var(--text-3)' }}>
             {isCurrent && playing && <Equalizer />}
+            {channelLabel && <span>{channelLabel} ·</span>}
             <span>{shortDate(video.published)}</span>
             {!done && (video.duration || detail) ? <span>· {detail && p > 0 ? remaining(video, detail) : formatTime(video.duration ?? detail?.dur ?? 0)}</span> : null}
           </p>
@@ -143,7 +144,9 @@ const VideoRow = memo(function VideoRow({ video, isCurrent, playing, isFav, deta
 })
 
 export function HomeView(props: Props) {
-  const { hydrated, videos, details, favorites, notes, currentId, playing, stats, channel, onPlay } = props
+  const { hydrated, videos, details, favorites, notes, currentId, playing, stats, channels, onPlay } = props
+  const [channelFilter, setChannelFilter] = useState<string | null>(null)
+  const shortName = (id?: string) => channels.length > 1 ? channels.find(c => c.id === id)?.name.split(/[의']/)[0].trim() : undefined
   const [filter, setFilter] = useState<Filter>('all')
   const [query, setQuery] = useState('')
   const [searching, setSearching] = useState(false)
@@ -154,9 +157,9 @@ export function HomeView(props: Props) {
     if (!hydrated) return null
     const cont = pickContinue(videos, details)
     const contId = cont?.video.id
-    const fresh = newEpisode(videos, details, now.getTime(), contId)
+    const fresh = newEpisodes(videos, details, now.getTime(), contId)
     const going = inProgress(videos, details, contId)
-    const pick = dailyPick(videos, details, dayKey(now), [contId, fresh?.id].filter(Boolean) as string[])
+    const pick = dailyPick(videos, details, dayKey(now), [contId, ...fresh.map(v => v.id)].filter(Boolean) as string[])
     return { cont, fresh, going, pick }
   }, [hydrated, videos, details, now])
 
@@ -164,13 +167,14 @@ export function HomeView(props: Props) {
     const q = deferredQuery.trim().toLowerCase()
     return groupByMonth(videos.filter(v => {
       if (q && !v.title.toLowerCase().includes(q)) return false
+      if (channelFilter && v.channel !== channelFilter) return false
       const p = progressOf(details[v.id])
       if (filter === 'unplayed') return !details[v.id]
       if (filter === 'fav') return favorites.has(v.id)
       if (filter === 'done') return p >= DONE_THRESHOLD
       return true
     }))
-  }, [videos, details, favorites, filter, deferredQuery])
+  }, [videos, details, favorites, filter, deferredQuery, channelFilter])
 
   const subtitle = hydrated
     ? stats.week > 0
@@ -187,9 +191,13 @@ export function HomeView(props: Props) {
             {stats.streak > 1 && hydrated ? <span aria-hidden>🔥 </span> : null}{subtitle}
           </p>
         </div>
-        <button aria-label="设置与云同步" onClick={props.onOpenSettings} className="tap w-10 h-10 rounded-full overflow-hidden flex-shrink-0 flex items-center justify-center"
-          style={{ background: channel.color }}>
-          {channel.avatar ? <img src={channel.avatar} alt="" className="w-full h-full object-cover" /> : <span className="font-bold">{channel.initial}</span>}
+        <button aria-label="设置与云同步" onClick={props.onOpenSettings} className="tap flex flex-shrink-0 items-center">
+          {channels.map((c, i) => (
+            <span key={c.id} className="w-10 h-10 rounded-full overflow-hidden flex items-center justify-center"
+              style={{ background: c.color, marginLeft: i ? -14 : 0, border: '2px solid var(--bg)', zIndex: channels.length - i }}>
+              {c.avatar ? <img src={c.avatar} alt="" className="w-full h-full object-cover" /> : <span className="font-bold">{c.initial}</span>}
+            </span>
+          ))}
         </button>
       </header>
 
@@ -207,19 +215,19 @@ export function HomeView(props: Props) {
         )}
       </div>
 
-      {sections?.fresh && (
-        <div className="px-5 mt-3 rise" style={{ animationDelay: '60ms' }}>
-          <button aria-label={`收听新一期 ${sections.fresh.title}`} onClick={() => onPlay(sections.fresh!)}
+      {sections?.fresh.map((fresh, i) => (
+        <div key={fresh.id} className="px-5 mt-3 rise" style={{ animationDelay: `${60 + i * 40}ms` }}>
+          <button aria-label={`收听新一期 ${fresh.title}`} onClick={() => onPlay(fresh)}
             className="tap w-full flex items-center gap-3 p-3 rounded-2xl text-left" style={{ background: 'var(--accent-soft)' }}>
-            <Cover src={sections.fresh.thumbnail} size={44} radius={10} />
+            <Cover src={fresh.thumbnail} size={44} radius={10} />
             <div className="flex-1 min-w-0">
-              <p className="text-[11px] font-bold tracking-wider" style={{ color: 'var(--accent)' }}>NEW · {shortDate(sections.fresh.published)}</p>
-              <p className="text-[14px] font-semibold truncate">{sections.fresh.title}</p>
+              <p className="text-[11px] font-bold tracking-wider" style={{ color: 'var(--accent)' }}>NEW · {[shortName(fresh.channel), shortDate(fresh.published)].filter(Boolean).join(' · ')}</p>
+              <p className="text-[14px] font-semibold truncate">{fresh.title}</p>
             </div>
             <PlayIcon size={18} className="mr-1" />
           </button>
         </div>
-      )}
+      ))}
 
       {sections && sections.going.length > 0 && (
         <section className="mt-8 rise" style={{ animationDelay: '100ms' }}>
@@ -273,6 +281,18 @@ export function HomeView(props: Props) {
                 className="w-full px-4 py-2.5 rounded-xl text-[15px] outline-none" style={{ background: 'var(--surface-2)', color: 'var(--text)' }} />
             </div>
           )}
+          {channels.length > 1 && (
+            <div className="flex gap-2 px-5 pt-3 overflow-x-auto no-scrollbar">
+              {[{ id: null as string | null, name: '全部博主', avatar: undefined as string | undefined }, ...channels].map(c => (
+                <button key={c.id ?? 'all'} onClick={() => setChannelFilter(c.id)} aria-pressed={channelFilter === c.id}
+                  className="tap flex items-center gap-1.5 pl-1 pr-3 py-1 rounded-full text-[13px] whitespace-nowrap"
+                  style={{ background: channelFilter === c.id ? 'var(--accent-soft)' : 'transparent', border: `1px solid ${channelFilter === c.id ? 'var(--accent)' : 'var(--line)'}`, color: channelFilter === c.id ? 'var(--accent)' : 'var(--text-2)' }}>
+                  {c.avatar ? <img src={c.avatar} alt="" className="w-6 h-6 rounded-full object-cover" /> : <span className="w-6" />}
+                  {c.name}
+                </button>
+              ))}
+            </div>
+          )}
           <div className="flex gap-2 px-5 py-3 overflow-x-auto no-scrollbar">
             {FILTERS.map(f => (
               <button key={f.key} onClick={() => setFilter(f.key)} aria-pressed={filter === f.key}
@@ -293,7 +313,7 @@ export function HomeView(props: Props) {
           <div key={group.key}>
             <p className="px-5 pt-5 pb-1 text-[12px] font-semibold tracking-wide" style={{ color: 'var(--text-3)' }}>{group.label}</p>
             {group.videos.map(v => (
-              <VideoRow key={v.id} video={v} isCurrent={currentId === v.id} playing={currentId === v.id && playing}
+              <VideoRow key={v.id} video={v} channelLabel={channelFilter ? undefined : shortName(v.channel)} isCurrent={currentId === v.id} playing={currentId === v.id && playing}
                 isFav={favorites.has(v.id)} detail={details[v.id]} note={notes[v.id]}
                 onPlay={onPlay} onToggleFav={props.onToggleFav} onResetProgress={props.onResetProgress} />
             ))}

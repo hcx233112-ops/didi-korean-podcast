@@ -27,7 +27,10 @@ jobs:
 
           API_KEY = os.environ["YOUTUBE_API_KEY"]
 
-          def clean_title(title):
+          def clean_title(title, lang="ko"):
+              if lang != "ko":
+                  # Only the Korean channel's title conventions are stripped; others just tidy spaces.
+                  return re.sub(r'\s{2,}', ' ', title).strip() or title
               t = title
               t = re.sub(r'【[^】]*[a-zA-Z]{2,}[^】]*】\s*', '', t)
               t = re.sub(r'\([^)]*\)', lambda m: m.group(0) if re.search(r'[가-힣]', m.group(0)) else '', t)
@@ -38,7 +41,7 @@ jobs:
               t = re.sub(r'[\s·\-–—]+$', '', t).strip()
               return t or title
 
-          def fetch_playlist(pl_id):
+          def fetch_playlist(pl_id, lang):
               videos = []
               page_token = None
               while True:
@@ -52,7 +55,7 @@ jobs:
                       s = item["snippet"]
                       vid = s["resourceId"]["videoId"]
                       thumb = s["thumbnails"].get("medium", s["thumbnails"].get("default", {})).get("url", f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg")
-                      videos.append({"id": vid, "title": clean_title(s["title"]), "published": s["publishedAt"][:10], "thumbnail": thumb})
+                      videos.append({"id": vid, "title": clean_title(s["title"], lang), "published": s["publishedAt"][:10], "thumbnail": thumb})
                   page_token = data.get("nextPageToken")
                   if not page_token:
                       break
@@ -83,7 +86,7 @@ jobs:
               ch_id = ch["id"]
               all_videos = {}
               for pl_id in ch["playlists"]:
-                  for v in fetch_playlist(pl_id):
+                  for v in fetch_playlist(pl_id, ch.get("lang", "ko")):
                       if v["id"] not in all_videos and v["title"] not in ("Private video", "Deleted video"):
                           all_videos[v["id"]] = v
 
@@ -92,7 +95,12 @@ jobs:
                   if durations.get(vid_id):
                       v["duration"] = durations[vid_id]
 
-              videos_sorted = sorted(all_videos.values(), key=lambda v: v["published"], reverse=True)
+              # Drop trailers/shorts and unaired premieres where a channel asks for a minimum length.
+              min_duration = ch.get("minDuration", 0)
+              kept = [v for v in all_videos.values() if not min_duration or v.get("duration", 0) >= min_duration]
+              videos_sorted = sorted(kept, key=lambda v: v["published"], reverse=True)
+              if ch.get("limit"):
+                  videos_sorted = videos_sorted[:ch["limit"]]
 
               out_path = f"public/data/videos/{ch_id}.json"
               try:
