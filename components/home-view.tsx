@@ -287,8 +287,8 @@ export function HomeView(props: Props) {
                 <button key={c.id ?? 'all'} onClick={() => setChannelFilter(c.id)} aria-pressed={channelFilter === c.id}
                   className="tap flex items-center gap-1.5 pl-1 pr-3 py-1 rounded-full text-[13px] whitespace-nowrap"
                   style={{ background: channelFilter === c.id ? 'var(--accent-soft)' : 'transparent', border: `1px solid ${channelFilter === c.id ? 'var(--accent)' : 'var(--line)'}`, color: channelFilter === c.id ? 'var(--accent)' : 'var(--text-2)' }}>
-                  {c.avatar ? <img src={c.avatar} alt="" className="w-6 h-6 rounded-full object-cover" /> : <span className="w-6" />}
-                  {c.name}
+                  {c.avatar ? <img src={c.avatar} alt="" className="w-6 h-6 rounded-full object-cover" /> : <span className="w-1" />}
+                  {c.id ? shortName(c.id) : c.name}
                 </button>
               ))}
             </div>
