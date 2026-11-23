@@ -307,6 +307,34 @@ class AutomationRegressionTests(unittest.TestCase):
         self.assertEqual(saved["lang"], "en")
         self.assertEqual(saved["segments"][0], {"start": 0.0, "end": 1.0, "ko": "Hello there.", "zh": "你好。"})
 
+    def test_english_titles_drop_numbers_tags_and_seo_tails(self):
+        titles = load("video_titles")
+        cases = {
+            "Sick in France 🇫🇷 | How My Family Holiday Became a 3-Week Nightmare [1009]": "Sick in France",
+            "Life, Death & Mario Kart [1008] A Rambling Challenge": "Life, Death & Mario Kart",
+            "868. How the USA is changing (with Lindsay McMahon)": "How the USA is changing",
+            "[BONUS] FIFA WORLD CUP 2026 PREVIEW MEGARAMBLE ⚽": "FIFA WORLD CUP 2026 PREVIEW MEGARAMBLE",
+            "895. Books 📚 Farts💨 & Ghosts 👻 (with Anna Brooke)": "Books Farts & Ghosts",
+            "Room 101🚪with Charlie Baxter 🇬🇧 Funny British English Listening Practice [980]": "Room 101 with Charlie Baxter",
+            "Technology in Everyday Life (Part 2) 👨‍💻 The Choices We Make / Topic Discussion & Vocabulary [947]": "Technology in Everyday Life (Part 2)",
+            "925. Walaa’s Experience in Syria / Walaa Mouma Returns (Part 2) and a much longer tail": "Walaa’s Experience in Syria",
+            "Episode 1000! 🎉": "Episode 1000!",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(titles.clean_title(raw, "en"), expected, raw)
+
+    def test_korean_title_rules_are_unchanged(self):
+        titles = load("video_titles")
+        self.assertEqual(titles.clean_title("Didi의 한국문화 Podcast 잠이 안오는 밤 (Korean Podcast) | Learn Korean", "ko"), "잠이 안오는 밤")
+        self.assertEqual(titles.clean_title("한국어 (자막) 이야기", "ko"), "한국어 (자막) 이야기")
+
+    def test_channel_selection_filters_short_videos_and_keeps_newest(self):
+        module = load("update-videos")
+        videos = [{"id": str(i), "published": f"2026-01-{i + 10:02d}", "duration": d} for i, d in enumerate([100, 700, 900, 0, 800])]
+        self.assertEqual([v["id"] for v in module.select(videos, {"minDuration": 600, "limit": 2})], ["4", "2"])
+        self.assertEqual(len(module.select(videos, {})), 5)
+        self.assertEqual(module.parse_duration("PT1H2M3S"), 3723)
+
     def test_pending_translation_includes_blank_chinese(self):
         module = load("retranslate")
         self.assertTrue(module._pending({"ko": "한국어", "zh": ""}))
