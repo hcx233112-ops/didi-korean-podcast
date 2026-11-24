@@ -335,6 +335,16 @@ class AutomationRegressionTests(unittest.TestCase):
         self.assertEqual(len(module.select(videos, {})), 5)
         self.assertEqual(module.parse_duration("PT1H2M3S"), 3723)
 
+    def test_generation_stops_starting_videos_after_its_time_budget(self):
+        module = load("generate-transcripts")
+        videos = [{"id": f"video{i:06d}", "lang": "en"} for i in range(5)]
+        ticks = iter([0, 10, 20, module.TIME_BUDGET_SECONDS + 1] + [module.TIME_BUDGET_SECONDS + 2] * 10)
+        with patch.object(module, "load_all_videos", return_value=videos), patch.object(module, "generate", return_value="ok") as generate, patch.object(module, "write_status") as status:
+            self.assertEqual(module.main([], clock=lambda: next(ticks)), 0)
+        self.assertEqual(generate.call_count, 2)
+        self.assertEqual(status.call_args.args[1], "pending")
+        self.assertEqual(status.call_args.kwargs["deferred"], 3)
+
     def test_pending_translation_includes_blank_chinese(self):
         module = load("retranslate")
         self.assertTrue(module._pending({"ko": "한국어", "zh": ""}))

@@ -5,6 +5,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from automation_common import NO_WINDOW, ProcessLock, atomic_json, read_json, should_generate, utc_now, write_status
 from retranslate import translate_all
@@ -14,6 +15,8 @@ TRANSCRIPTS_DIR = ROOT / "public" / "data" / "transcripts"
 CHANNELS_DIR = ROOT / "public" / "data" / "videos"
 CHANNELS_FILE = ROOT / "data" / "channels.json"
 # Preferred tracks first: a creator's own captions beat the auto-generated ones.
+# The batch commits only after generation; stopping early keeps it inside the task's time limit.
+TIME_BUDGET_SECONDS = 100 * 60
 SUB_LANGS = {"ko": ["ko"], "en": ["en-GB", "en-US", "en"]}
 
 
@@ -99,17 +102,21 @@ def generate(video_id, title="", force=False, lang="ko"):
     return "partial" if any(not text for text in translated) else "ok"
 
 
-def main(argv=None):
+def main(argv=None, clock=time.monotonic):
     ids = set(sys.argv[1:] if argv is None else argv)
     lock = ProcessLock(ROOT / "logs" / "transcript-generation-lock.log")
     if not lock.acquire():
         print("已有字幕生成实例运行，本次跳过")
         return 0
-    counts = {"ok": 0, "partial": 0, "skip": 0, "no_transcript": 0, "failed": 0}
+    counts = {"ok": 0, "partial": 0, "skip": 0, "no_transcript": 0, "failed": 0, "deferred": 0}
+    deadline = clock() + TIME_BUDGET_SECONDS
     try:
         write_status("transcript-generation", "running")
         for video in load_all_videos():
             if ids and video["id"] not in ids:
+                continue
+            if clock() > deadline:
+                counts["deferred"] += 1
                 continue
             try:
                 result = generate(video["id"], video.get("title", ""), force=bool(ids), lang=video.get("lang", "ko"))
@@ -120,7 +127,9 @@ def main(argv=None):
                 counts["failed"] += 1
                 print(f"{video['id']}: 失败: {exc}", flush=True)
         failed = bool(counts["failed"])
-        write_status("transcript-generation", "failed" if failed else "pending" if counts["partial"] else "success", **counts)
+        if counts["deferred"]:
+            print(f"时间预算用完，{counts['deferred']} 个视频留到下次处理", flush=True)
+        write_status("transcript-generation", "failed" if failed else "pending" if counts["partial"] or counts["deferred"] else "success", **counts)
         print(json.dumps(counts, ensure_ascii=False), flush=True)
         return 1 if failed else 0
     except Exception as exc:
