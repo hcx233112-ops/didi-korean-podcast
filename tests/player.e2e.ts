@@ -275,6 +275,30 @@ test.describe('gestures', () => {
     await expect(player).toHaveCount(0)
   })
 
+  test('scrolling subtitles does no per-row work and never waits on a touch listener', async ({ page }) => {
+    await page.goto('/')
+    await page.getByRole('button', { name: '播放 First episode', exact: true }).click()
+    await page.getByRole('button', { name: '打开当前节目字幕', exact: true }).click()
+    await expect(page.locator('#seg-299')).toBeAttached()
+    // content-visibility: auto on every row made the browser re-check thousands of rows each frame.
+    expect(await page.locator('#seg-3').evaluate(el => getComputedStyle(el).contentVisibility)).toBe('visible')
+    const cdp = await page.context().newCDPSession(page)
+    // Only the app's own scripts count; Playwright's injected helpers listen on window too.
+    const appScripts = new Set<string>()
+    cdp.on('Debugger.scriptParsed', s => { if (s.url.includes('/_next/')) appScripts.add(s.scriptId) })
+    await cdp.send('Debugger.enable')
+    const blocking: string[] = []
+    const targets = ['window', 'document', ...Array.from({ length: 30 }, (_, depth) =>
+      `(() => { let el = document.getElementById('seg-3'); for (let i = 0; i < ${depth} && el; i++) el = el.parentElement; return el })()`)]
+    for (const expression of targets) {
+      const { result } = await cdp.send('Runtime.evaluate', { expression })
+      if (!result.objectId) continue
+      const { listeners } = await cdp.send('DOMDebugger.getEventListeners', { objectId: result.objectId })
+      blocking.push(...listeners.filter(l => /^(touchstart|touchmove|wheel)$/.test(l.type) && !l.passive && appScripts.has(l.scriptId)).map(l => `${l.type} at ${expression.slice(0, 50)}`))
+    }
+    expect(blocking).toEqual([])
+  })
+
   test('sheets close by dragging down, and a sheet reopened while closing stays open', async ({ page }) => {
     await page.goto('/')
     await page.getByRole('button', { name: '播放 First episode', exact: true }).click()

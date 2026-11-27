@@ -133,8 +133,7 @@ const VideoRow = memo(function VideoRow({ video, channelLabel, isCurrent, playin
       <div role="button" tabIndex={0} aria-label={`播放 ${video.title}`}
         onKeyDown={e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onPlay(video) } }}
         onClick={() => onPlay(video)}
-        className="flex items-center gap-3.5 pl-5 pr-24 py-3 cursor-pointer active:bg-white/5 transition-colors"
-        style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 78px' }}>
+        className="flex items-center gap-3.5 pl-5 pr-24 py-3 cursor-pointer active:bg-white/5 transition-colors">
         <Cover src={video.thumbnail} size={54} radius={12} />
         <div className="flex-1 min-w-0">
           <p className="text-[15px] leading-snug line-clamp-2" style={{ color: isCurrent ? 'var(--accent)' : done ? 'var(--text-2)' : 'var(--text)', fontWeight: isCurrent ? 600 : 500 }}>

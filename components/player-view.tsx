@@ -95,7 +95,7 @@ const TranscriptRow = memo(function TranscriptRow({ index, seg, active, drilling
 }) {
   return (
     <button id={`seg-${index}`} data-seg={index} onClick={() => onSeek(seg.start)} className="seg-row relative w-full text-left px-6 py-3 rounded-2xl active:bg-white/5"
-      style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 80px', background: active && drilling ? 'rgba(255,255,255,.07)' : undefined }}>
+      style={{ background: active && drilling ? 'rgba(255,255,255,.07)' : undefined }}>
       {saved && <span className="absolute left-2 top-[18px]" style={{ color: 'var(--accent)' }}><BookmarkIcon size={11} filled /></span>}
       <p style={{ color: active ? 'var(--text)' : 'var(--text-3)', fontWeight: active ? 650 : 500, fontSize: active ? 20 : 18, lineHeight: 1.5, transition: 'color .2s, font-size .2s' }}>{seg.ko}</p>
       {showTranslation && seg.zh && seg.zh !== seg.ko && (
@@ -184,7 +184,7 @@ export function FullPlayer(p: FullPlayerProps) {
   const [page, setPage] = useState<0 | 1>(p.initialPage)
   const [detached, setDetached] = useState(false)
   // Drag down from the header, or anywhere on the now-playing page while it is scrolled to the top.
-  const drag = useDragDismiss<HTMLDivElement>(p.onClose, target => {
+  const drag = useDragDismiss<HTMLElement>(p.onClose, target => {
     if (target.closest('input, textarea')) return false
     if (target.closest('[data-drag-handle]')) return true
     const page0 = target.closest('[data-drag-page]') as HTMLElement | null
@@ -258,7 +258,7 @@ export function FullPlayer(p: FullPlayerProps) {
 
   return (
     <div className="fixed inset-0 z-50" style={{ animation: `${p.closing ? 'sheet-down' : 'sheet-up'} .38s var(--ease) both`, pointerEvents: p.closing ? 'none' : undefined }}>
-    <div ref={drag.ref} role="dialog" aria-modal="true" aria-label="正在播放" className="absolute inset-0 flex flex-col overflow-hidden"
+    <div role="dialog" aria-modal="true" aria-label="正在播放" className="absolute inset-0 flex flex-col overflow-hidden"
       style={{
         backgroundColor: 'var(--bg)',
         backgroundImage: `linear-gradient(180deg, rgb(${p.tint}) 0%, rgb(${p.tint} / .55) 38%, rgb(${p.tint} / 0) 82%)`,
@@ -266,7 +266,7 @@ export function FullPlayer(p: FullPlayerProps) {
         transition: drag.dragging ? 'background 0.8s ease' : 'background 0.8s ease, transform .3s var(--ease), border-radius .3s var(--ease)',
         borderRadius: drag.offset ? 28 : 0,
       }}>
-      <div data-drag-handle className="flex-shrink-0 px-4" style={{ paddingTop: 'calc(env(safe-area-inset-top) + 6px)' }}>
+      <div ref={drag.area} data-drag-handle className="flex-shrink-0 px-4" style={{ paddingTop: 'calc(env(safe-area-inset-top) + 6px)' }}>
         <div className="w-10 h-[5px] rounded-full mx-auto mb-2" style={{ background: 'rgba(255,255,255,.35)' }} />
         <div className="flex items-center">
           <button aria-label="收起播放器" onClick={p.onClose} className="tap w-10 h-10 flex items-center justify-center"><ChevronDown /></button>
@@ -288,7 +288,7 @@ export function FullPlayer(p: FullPlayerProps) {
       <div ref={pager} className="flex-1 min-h-0 flex overflow-x-auto overflow-y-hidden no-scrollbar snap-x snap-mandatory"
         onScroll={e => { const el = e.currentTarget; const next = el.scrollLeft > el.clientWidth / 2 ? 1 : 0; if (next !== page) setPage(next) }}>
         {/* Page 1: now playing */}
-        <section data-drag-page className="w-full flex-shrink-0 snap-start flex flex-col px-7 overflow-y-auto no-scrollbar" aria-label="播放" style={{ overscrollBehavior: 'none' }}>
+        <section ref={drag.area} data-drag-page className="w-full flex-shrink-0 snap-start flex flex-col px-7 overflow-y-auto no-scrollbar" aria-label="播放" style={{ overscrollBehavior: 'none' }}>
           <div className="flex-1 min-h-4" />
           {/* hqdefault is letterboxed 4:3; a 16:9 cover crop removes the bars. */}
           <img src={p.video.thumbnail.replace('mqdefault', 'hqdefault')} alt="" className="w-full aspect-video object-cover rounded-[24px] shadow-2xl mx-auto"
@@ -401,7 +401,7 @@ export function Sheet({ title, closing, onClose, children, z = 70 }: { title: st
     <div className="fixed inset-0 flex items-end" onClick={onClose}
       style={{ zIndex: z, background: `rgba(0,0,0,${0.5 * (1 - Math.min(1, drag.offset / 400))})`, animation: `${closing ? 'fade-out' : 'fade-in'} .28s ease both`, pointerEvents: closing ? 'none' : undefined }}>
       <div className="w-full" style={{ animation: `${closing ? 'sheet-down' : 'sheet-up'} .32s var(--ease) both` }}>
-        <section ref={drag.ref} role="dialog" aria-modal="true" aria-label={title} onClick={e => e.stopPropagation()}
+        <section ref={drag.area} role="dialog" aria-modal="true" aria-label={title} onClick={e => e.stopPropagation()}
           className="w-full rounded-t-[28px] px-5 pt-3"
           style={{
             background: 'var(--surface)', paddingBottom: 'calc(env(safe-area-inset-bottom) + 20px)',
