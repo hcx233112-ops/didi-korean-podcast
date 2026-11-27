@@ -65,7 +65,7 @@ const appSource=()=>fs.readFileSync(path.join(__dirname,'../components/podcast-a
 const extract=(source,name)=>new RegExp(String.raw`function ${name}\(\) \{[\s\S]*?\n  \}`).exec(source)[0];
 const js=fn=>ts.transpileModule(fn,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText.trim().replace(/;$/,"");
 function audioDependencies(audio,overrides){
-  return {audioRef:{current:null},document:{querySelector:()=>audio},Audio:function(){return audio},setPlaying(){},lastPosRef:{current:null},persistCurrent(){},flushListening(){},syncNow:async()=>{},checkTimer(){},setPlaybackError(){},currentIdRef:{current:'abcdefghijk'},saveProgress(){},blockAutoAdvanceRef:{current:false},stopAfterCurrentRef:{current:false},setStopAfterCurrent(){},nextOf:()=>null,playRef:{current(){}},resumeAtRef:{current:0},...overrides};
+  return {audioRef:{current:null},document:{querySelector:()=>audio},Audio:function(){return audio},setPlaying(){},lastPosRef:{current:null},persistCurrent(){},flushListening(){},syncNow:async()=>{},checkTimer(){},setPlaybackError(){},currentIdRef:{current:'abcdefghijk'},saveProgress(){},blockAutoAdvanceRef:{current:false},stopAfterCurrentRef:{current:false},setStopAfterCurrent(){},nextOf:()=>null,playRef:{current(){}},resumeAtRef:{current:0},checkDrill(){},onDrillSeeked(){},loopAtEnd:()=>false,drillPauseRef:{current:false},cancelWait(){},...overrides};
 }
 test('the player saves progress from background audio events, including pause and seek', () => {
   const handlers={},saved=[];

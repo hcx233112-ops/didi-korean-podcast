@@ -1,15 +1,16 @@
 'use client'
 
 import { memo, useEffect, useRef, useState } from 'react'
+import { DRILL_LABEL, type DrillMode } from '@/lib/drill'
 import { type Video, formatTime } from '@/lib/library'
-import { BackIcon, ChevronDown, ForwardIcon, HeartIcon, MoonIcon, NoteIcon, PauseIcon, PlayIcon, TextIcon } from './icons'
+import { BackIcon, BookmarkIcon, ChevronDown, ForwardIcon, HeartIcon, MoonIcon, NoteIcon, PauseIcon, PlayIcon, RepeatIcon, ReplayIcon, TextIcon } from './icons'
 
 export interface TranscriptSegment { start: number; end: number; ko: string; zh: string }
 
 /* ───────────── Mini player ───────────── */
 
-export function MiniPlayer({ video, playing, progress, timerLabel, onToggle, onOpen, onPrev, onNext }: {
-  video: Video; playing: boolean; progress: number; timerLabel: string | null
+export function MiniPlayer({ video, playing, progress, timerLabel, drillLabel, onToggle, onOpen, onPrev, onNext }: {
+  video: Video; playing: boolean; progress: number; timerLabel: string | null; drillLabel: string | null
   onToggle: () => void; onOpen: (page: 0 | 1) => void; onPrev: () => void; onNext: () => void
 }) {
   const start = useRef<{ x: number; y: number } | null>(null)
@@ -31,8 +32,8 @@ export function MiniPlayer({ video, playing, progress, timerLabel, onToggle, onO
             <img src={video.thumbnail} alt="" className="w-11 h-11 rounded-xl object-cover flex-shrink-0" />
             <div className="min-w-0 flex-1">
               <p className="text-[14px] font-semibold truncate">{video.title}</p>
-              <p className="text-[12px] truncate" style={{ color: timerLabel ? 'var(--accent)' : 'var(--text-3)' }}>
-                {timerLabel ? `${timerLabel}后停止` : '左右滑动切换 · 上滑展开'}
+              <p className="text-[12px] truncate" style={{ color: timerLabel || drillLabel ? 'var(--accent)' : 'var(--text-3)' }}>
+                {[timerLabel && `${timerLabel}后停止`, drillLabel].filter(Boolean).join(' · ') || '左右滑动切换 · 上滑展开'}
               </p>
             </div>
           </button>
@@ -53,15 +54,25 @@ export function MiniPlayer({ video, playing, progress, timerLabel, onToggle, onO
 
 /* ───────────── Full player ───────────── */
 
-const TranscriptRow = memo(function TranscriptRow({ index, seg, active, showTranslation, onSeek }: {
-  index: number; seg: TranscriptSegment; active: boolean; showTranslation: boolean; onSeek: (start: number) => void
+const TranscriptRow = memo(function TranscriptRow({ index, seg, active, drilling, saved, wait, showTranslation, onSeek }: {
+  index: number; seg: TranscriptSegment; active: boolean; drilling: boolean; saved: boolean; wait: { ms: number; key: number } | null
+  showTranslation: boolean; onSeek: (start: number) => void
 }) {
   return (
-    <button id={`seg-${index}`} onClick={() => onSeek(seg.start)} className="w-full text-left px-6 py-3 rounded-2xl active:bg-white/5"
-      style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 80px' }}>
+    <button id={`seg-${index}`} data-seg={index} onClick={() => onSeek(seg.start)} className="seg-row relative w-full text-left px-6 py-3 rounded-2xl active:bg-white/5"
+      style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 80px', background: active && drilling ? 'rgba(255,255,255,.07)' : undefined }}>
+      {saved && <span className="absolute left-2 top-[18px]" style={{ color: 'var(--accent)' }}><BookmarkIcon size={11} filled /></span>}
       <p style={{ color: active ? 'var(--text)' : 'var(--text-3)', fontWeight: active ? 650 : 500, fontSize: active ? 20 : 18, lineHeight: 1.5, transition: 'color .2s, font-size .2s' }}>{seg.ko}</p>
       {showTranslation && seg.zh && seg.zh !== seg.ko && (
         <p style={{ color: active ? 'var(--accent)' : 'var(--text-3)', opacity: active ? 1 : 0.7, fontSize: 14, lineHeight: 1.5, marginTop: 4 }}>{seg.zh}</p>
+      )}
+      {wait && (
+        <span key={wait.key} className="flex items-center gap-2 mt-2 text-[12px] font-semibold" style={{ color: 'var(--accent)' }}>
+          该你说了
+          <span className="flex-1 h-[3px] rounded-full overflow-hidden" style={{ background: 'var(--line)' }}>
+            <span className="block h-full origin-left" style={{ background: 'var(--accent)', animation: `drill-wait ${wait.ms}ms linear both` }} />
+          </span>
+        </span>
       )}
     </button>
   )
@@ -113,6 +124,9 @@ export interface FullPlayerProps {
   transcriptError: string | null
   currentSegIdx: number
   showTranslation: boolean
+  drill: DrillMode
+  drillWait: { idx: number; ms: number; key: number } | null
+  savedStarts: Set<number>
   onClose: () => void
   onToggle: () => void
   onSkip: (seconds: number) => void
@@ -124,6 +138,9 @@ export interface FullPlayerProps {
   onSeekSegment: (start: number) => void
   onRetryTranscript: () => void
   onToggleTranslation: () => void
+  onOpenDrill: () => void
+  onSegmentMenu: (index: number) => void
+  onReplaySentence: () => void
 }
 
 export function FullPlayer(p: FullPlayerProps) {
@@ -166,6 +183,37 @@ export function FullPlayer(p: FullPlayerProps) {
     if (detachTimer.current) clearTimeout(detachTimer.current)
     detachTimer.current = setTimeout(() => setDetached(false), 8000)
   }
+
+  // Long-press (or right-click) a sentence for its menu; one delegated handler serves every row.
+  const press = useRef<{ x: number; y: number; timer: ReturnType<typeof setTimeout>; fired: boolean } | null>(null)
+  const rowIndex = (target: EventTarget) => {
+    const row = (target as HTMLElement).closest?.('[data-seg]') as HTMLElement | null
+    return row ? Number(row.dataset.seg) : null
+  }
+  const endPress = () => { if (press.current && !press.current.fired) { clearTimeout(press.current.timer); press.current = null } }
+  const pressHandlers = {
+    onPointerDown: (e: React.PointerEvent) => {
+      const idx = rowIndex(e.target)
+      if (idx === null || e.button !== 0) return
+      if (press.current) clearTimeout(press.current.timer)
+      const timer = setTimeout(() => {
+        if (!press.current) return
+        press.current.fired = true
+        navigator.vibrate?.(12)
+        p.onSegmentMenu(idx)
+      }, 480)
+      press.current = { x: e.clientX, y: e.clientY, timer, fired: false }
+    },
+    onPointerMove: (e: React.PointerEvent) => {
+      if (press.current && !press.current.fired && Math.hypot(e.clientX - press.current.x, e.clientY - press.current.y) > 10) endPress()
+    },
+    onPointerUp: endPress,
+    onPointerCancel: endPress,
+    // The release after a long press must not also seek.
+    onClickCapture: (e: React.MouseEvent) => { if (press.current?.fired) { e.stopPropagation(); e.preventDefault() } press.current = null },
+    onContextMenu: (e: React.MouseEvent) => { const idx = rowIndex(e.target); if (idx !== null) { e.preventDefault(); endPress(); p.onSegmentMenu(idx) } },
+  }
+  useEffect(() => () => { if (press.current) clearTimeout(press.current.timer) }, [])
 
   // Drag the handle area down to dismiss.
   const dragStart = useRef<number | null>(null)
@@ -252,11 +300,15 @@ export function FullPlayer(p: FullPlayerProps) {
           <div className="flex items-center gap-3 px-6 pb-2">
             <img src={p.video.thumbnail} alt="" className="w-9 h-9 rounded-lg object-cover" />
             <p className="flex-1 min-w-0 text-[13px] font-semibold truncate">{p.video.title}</p>
-            <button onClick={p.onToggleTranslation} aria-pressed={p.showTranslation} className="tap px-3 py-1.5 rounded-full text-[12px] font-semibold"
+            <button onClick={p.onOpenDrill} aria-label={`跟读练习：${p.drill === 'off' ? '关闭' : DRILL_LABEL[p.drill]}`} className="tap px-3 py-1.5 rounded-full text-[12px] font-semibold flex items-center gap-1 flex-shrink-0"
+              style={{ background: p.drill !== 'off' ? 'var(--accent-soft)' : 'rgba(255,255,255,.1)', color: p.drill !== 'off' ? 'var(--accent)' : 'var(--text-2)' }}>
+              <RepeatIcon size={13} />{DRILL_LABEL[p.drill]}
+            </button>
+            <button onClick={p.onToggleTranslation} aria-pressed={p.showTranslation} className="tap px-3 py-1.5 rounded-full text-[12px] font-semibold flex-shrink-0"
               style={{ background: p.showTranslation ? 'var(--accent-soft)' : 'rgba(255,255,255,.1)', color: p.showTranslation ? 'var(--accent)' : 'var(--text-2)' }}>中文翻译</button>
           </div>
           <div ref={list} className="relative flex-1 min-h-0 overflow-y-auto no-scrollbar py-2 px-1"
-            onTouchMove={onUserScroll} onWheel={onUserScroll}
+            onTouchMove={onUserScroll} onWheel={onUserScroll} {...pressHandlers}
             style={{ maskImage: 'linear-gradient(transparent, #000 6%, #000 88%, transparent)', WebkitMaskImage: 'linear-gradient(transparent, #000 6%, #000 88%, transparent)' }}>
             {p.transcriptLoading && Array.from({ length: 6 }, (_, i) => <div key={i} className="skeleton h-6 rounded-lg mx-6 my-4" style={{ width: `${60 + (i * 13) % 35}%` }} />)}
             {p.transcriptError && (
@@ -265,9 +317,12 @@ export function FullPlayer(p: FullPlayerProps) {
                 <button className="tap mt-3 font-semibold" style={{ color: 'var(--accent)' }} onClick={p.onRetryTranscript}>重新加载字幕</button>
               </div>
             )}
-            <div className="h-[30vh]" />
+            <div className="h-[30vh] flex items-end justify-center pb-3">
+              {p.segments.length > 0 && <p className="text-[12px]" style={{ color: 'var(--text-3)' }}>点句子跳转 · 长按句子可循环、收藏、查词</p>}
+            </div>
             {p.segments.map((seg, i) => (
-              <TranscriptRow key={i} index={i} seg={seg} active={i === p.currentSegIdx} showTranslation={p.showTranslation} onSeek={p.onSeekSegment} />
+              <TranscriptRow key={i} index={i} seg={seg} active={i === p.currentSegIdx} drilling={p.drill !== 'off'} saved={p.savedStarts.has(seg.start)}
+                wait={p.drillWait?.idx === i ? p.drillWait : null} showTranslation={p.showTranslation} onSeek={p.onSeekSegment} />
             ))}
             <div className="h-[40vh]" />
           </div>
@@ -279,6 +334,7 @@ export function FullPlayer(p: FullPlayerProps) {
             </button>
           )}
           <div className="flex-shrink-0 px-6 pt-2 flex items-center gap-4" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 12px)' }}>
+            <button aria-label="重听这一句" onClick={p.onReplaySentence} className="tap"><ReplayIcon size={28} /></button>
             <button aria-label="后退 15 秒" onClick={() => p.onSkip(-15)} className="tap"><BackIcon size={28} /></button>
             <button aria-label={p.playing ? '暂停播放' : '开始播放'} onClick={p.onToggle} className="tap w-12 h-12 rounded-full flex items-center justify-center" style={{ background: '#fff', color: '#000' }}>
               {p.playing ? <PauseIcon size={20} /> : <PlayIcon size={20} className="ml-0.5" />}

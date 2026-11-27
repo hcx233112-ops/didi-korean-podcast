@@ -68,6 +68,11 @@ export function dailyPick(videos: Video[], details: Record<string, ProgressDetai
   return pool.length ? pool[hash(day) % pool.length] : null
 }
 
+/** The same item all day, a different one tomorrow. */
+export function pickOfDay<T>(items: T[], day: string) {
+  return items.length ? items[hash(day) % items.length] : null
+}
+
 export function groupByMonth(videos: Video[]) {
   const groups: { key: string; label: string; videos: Video[] }[] = []
   for (const video of videos) {

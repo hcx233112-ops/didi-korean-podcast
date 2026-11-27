@@ -5,7 +5,8 @@ import {
   DONE_THRESHOLD, type ProgressDetail, type Video, dailyPick, dayKey, formatDuration, formatTime, greeting,
   groupByMonth, inProgress, newEpisodes, pickContinue, progressOf,
 } from '@/lib/library'
-import { CheckIcon, HeartIcon, PauseIcon, PlayIcon, ProgressRing, SearchIcon, ShuffleIcon } from './icons'
+import type { Phrase } from '@/lib/phrases'
+import { BookmarkIcon, CheckIcon, HeartIcon, PauseIcon, PlayIcon, ProgressRing, SearchIcon, ShuffleIcon } from './icons'
 
 export interface Channel { id: string; name: string; description: string; initial: string; color: string; avatar?: string; lang?: string }
 type Filter = 'all' | 'unplayed' | 'fav' | 'done'
@@ -21,7 +22,10 @@ interface Props {
   notes: Record<string, string>
   currentId: string | null
   playing: boolean
-  stats: { week: number; streak: number; finished: number }
+  stats: { week: number; streak: number; finished: number; days: { key: string; label: string; listened: boolean; today: boolean; future: boolean }[]; goal: number }
+  phraseCount: number
+  phraseOfDay: Phrase | null
+  onOpenPhrases: () => void
   channels: Channel[]
   listError: string | null
   onRetryList: () => void
@@ -91,6 +95,25 @@ function ContinueCard({ video, detail, resume, isCurrent, playing, onPlay }: {
           {isCurrent && playing ? <PauseIcon size={20} /> : <PlayIcon size={20} className="ml-0.5" />}
         </span>
       </button>
+    </div>
+  )
+}
+
+function WeekStrip({ days, goal }: { days: Props['stats']['days']; goal: number }) {
+  const count = days.filter(d => d.listened).length
+  const met = count >= goal
+  return (
+    <div className="flex items-center gap-1 mt-2.5" role="img" aria-label={`本周已有 ${count} 天在听，目标 ${goal} 天`}>
+      {days.map(d => (
+        <span key={d.key} className="w-[22px] h-[22px] rounded-full flex items-center justify-center text-[10px] font-semibold"
+          style={{
+            background: d.listened ? 'var(--accent)' : 'transparent', color: d.listened ? '#000' : 'var(--text-3)',
+            border: d.listened ? 'none' : `1px solid ${d.today ? 'var(--accent)' : 'var(--line)'}`, opacity: d.future ? 0.45 : 1,
+          }}>{d.label}</span>
+      ))}
+      <span className="text-[12px] ml-1.5 font-semibold" style={{ color: met ? 'var(--accent)' : 'var(--text-2)' }}>
+        {met ? '本周目标达成' : `本周 ${count}/${goal} 天`}
+      </span>
     </div>
   )
 }
@@ -190,6 +213,7 @@ export function HomeView(props: Props) {
           <p className="text-[13px] mt-0.5 tabular-nums" style={{ color: 'var(--text-2)' }}>
             {stats.streak > 1 && hydrated ? <span aria-hidden>🔥 </span> : null}{subtitle}
           </p>
+          {hydrated ? <WeekStrip days={stats.days} goal={stats.goal} /> : <div className="h-[22px] mt-2.5" />}
         </div>
         <button aria-label="设置与云同步" onClick={props.onOpenSettings} className="tap flex flex-shrink-0 items-center">
           {channels.map((c, i) => (
@@ -263,6 +287,20 @@ export function HomeView(props: Props) {
               <p className="text-[15px] font-semibold leading-snug line-clamp-2 mt-1">{sections.pick.title}</p>
               <p className="text-[12px] mt-1" style={{ color: 'var(--text-3)' }}>{shortDate(sections.pick.published)} · {remaining(sections.pick)}</p>
             </div>
+          </button>
+        </section>
+      )}
+
+      {props.phraseOfDay && (
+        <section className="mt-8 px-5 rise" style={{ animationDelay: '180ms' }}>
+          <button aria-label={`打开句子本，共 ${props.phraseCount} 句`} onClick={props.onOpenPhrases}
+            className="tap w-full text-left rounded-[22px] p-4" style={{ background: 'var(--surface)', border: '1px solid var(--line)' }}>
+            <div className="flex items-center justify-between">
+              <p className="text-[12px] font-semibold flex items-center gap-1" style={{ color: 'var(--accent)' }}><BookmarkIcon size={12} filled /> 句子本 · 今日复习</p>
+              <span className="text-[12px]" style={{ color: 'var(--text-3)' }}>{props.phraseCount} 句 ›</span>
+            </div>
+            <p className="text-[16px] font-semibold leading-snug line-clamp-2 mt-2">{props.phraseOfDay.text}</p>
+            {props.phraseOfDay.zh && <p className="text-[13px] mt-1 line-clamp-1" style={{ color: 'var(--text-3)' }}>{props.phraseOfDay.zh}</p>}
           </button>
         </section>
       )}

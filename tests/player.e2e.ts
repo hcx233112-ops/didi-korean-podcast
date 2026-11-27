@@ -105,3 +105,96 @@ test('autoplay skips finished episodes, and tapping the loaded episode opens the
   await page.locator('audio').evaluate(audio => audio.dispatchEvent(new Event('ended')))
   await expect(page.getByRole('dialog', { name: '正在播放' })).toContainText('Third episode')
 })
+
+async function openTranscript(page: import('@playwright/test').Page) {
+  await page.goto('/')
+  await page.getByRole('button', { name: '播放 First episode', exact: true }).click()
+  await page.getByRole('button', { name: '打开当前节目字幕', exact: true }).click()
+  await expect(page.locator('#seg-2')).toContainText('First line 2')
+  await page.evaluate(() => {
+    const audio = document.querySelector('audio')!
+    const log: string[] = []
+    Object.assign(window, { audioLog: log })
+    for (const type of ['pause', 'play', 'seeked']) audio.addEventListener(type, () => log.push(`${type}@${audio.currentTime}`))
+  })
+}
+const audioLog = (page: import('@playwright/test').Page) => page.evaluate(() => (window as unknown as { audioLog: string[] }).audioLog)
+const setTime = (page: import('@playwright/test').Page, t: number) => page.locator('audio').evaluate((audio: HTMLAudioElement, time) => { audio.currentTime = time }, t)
+
+test('sentence loop rests briefly at the end of the sentence, then replays it', async ({ page }) => {
+  await openTranscript(page)
+  await page.getByRole('button', { name: /^跟读练习/ }).click()
+  await page.getByRole('button', { name: /^单句循环/ }).click()
+  await setTime(page, 7)
+  await setTime(page, 8.96)
+  await expect.poll(() => audioLog(page)).toEqual(['seeked@7', 'seeked@8.96', 'pause@8.96', 'seeked@5', 'play@5'])
+  await expect(page.locator('#seg-1')).toHaveCSS('background-color', 'rgba(255, 255, 255, 0.07)')
+})
+
+test('shadowing pauses after each sentence for the listener, then carries on without rewinding', async ({ page }) => {
+  await page.route('**/data/transcripts/*.json', route => route.fulfill({ json: { segments: Array.from({ length: 50 }, (_, i) => ({ start: i * 2, end: i * 2 + 1, ko: `First line ${i}`, zh: `Translation ${i}` })) } }))
+  await openTranscript(page)
+  await page.getByRole('button', { name: /^跟读练习/ }).click()
+  await page.getByRole('button', { name: /^逐句跟读/ }).click()
+  await setTime(page, 4.97)
+  await expect(page.locator('#seg-2')).toContainText('该你说了')
+  expect(await audioLog(page)).toEqual(['seeked@4.97', 'pause@4.97'])
+  await expect.poll(() => audioLog(page), { timeout: 4000 }).toEqual(['seeked@4.97', 'pause@4.97', 'play@4.97'])
+  await expect(page.locator('#seg-2')).not.toContainText('该你说了')
+  // The next sentence is drilled next.
+  await setTime(page, 6.96)
+  await expect.poll(() => audioLog(page)).toContain('pause@6.96')
+})
+
+test('pressing play during a shadow pause continues at once', async ({ page }) => {
+  await openTranscript(page)
+  await page.getByRole('button', { name: /^跟读练习/ }).click()
+  await page.getByRole('button', { name: /^逐句跟读/ }).click()
+  await setTime(page, 8.97)
+  await expect(page.locator('#seg-1')).toContainText('该你说了')
+  await page.getByRole('button', { name: '开始播放' }).last().click()
+  expect(await audioLog(page)).toEqual(['seeked@8.97', 'pause@8.97', 'play@8.97'])
+  await expect(page.locator('#seg-1')).not.toContainText('该你说了')
+})
+
+test('a long-pressed sentence opens its menu without seeking, and saved sentences play alone from home', async ({ page }) => {
+  await openTranscript(page)
+  // hover waits for the player's slide-up animation to settle before pressing.
+  await page.locator('#seg-2').hover()
+  await page.mouse.down()
+  const menu = page.getByRole('dialog', { name: '这一句' })
+  await expect(menu).toContainText('First line 2')
+  await page.mouse.up()
+  expect(await audioLog(page)).toEqual([])
+  await expect(menu.getByRole('link', { name: 'First' })).toHaveAttribute('href', /korean\.dict\.naver\.com/)
+  await menu.getByRole('button', { name: '收藏句子' }).click()
+  await expect(menu.getByRole('button', { name: '已收藏' })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(menu).toHaveCount(0)
+  await page.getByRole('button', { name: '收起播放器' }).click()
+  await page.getByRole('button', { name: /^打开句子本/ }).click()
+  const book = page.getByRole('dialog', { name: '句子本' })
+  await expect(book).toContainText('Translation 2')
+  await book.getByRole('button', { name: '播放这一句 First line 2' }).click()
+  await expect.poll(() => audioLog(page)).toEqual(['seeked@10', 'play@10'])
+  await setTime(page, 13.95)
+  await expect.poll(() => audioLog(page)).toEqual(['seeked@10', 'play@10', 'seeked@13.95', 'pause@13.95'])
+  await book.getByRole('button', { name: '取消收藏 First line 2' }).click()
+  await expect(book.getByRole('button', { name: '重新收藏 First line 2' })).toBeVisible()
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('podcast-phrases-v1')!))).toEqual([])
+})
+
+test('the week strip counts listening days, and keyboard shortcuts drive playback', async ({ page }) => {
+  await page.addInitScript(() => {
+    const d = new Date(), key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    localStorage.setItem('podcast-stats-v1', JSON.stringify({ days: { [key]: 600 } }))
+  })
+  await page.goto('/')
+  await expect(page.getByRole('img', { name: '本周已有 1 天在听，目标 4 天' })).toBeVisible()
+  await page.getByRole('button', { name: '播放 First episode', exact: true }).click()
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+  await page.keyboard.press('Space')
+  expect(await page.locator('audio').evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(true)
+  await page.keyboard.press('ArrowRight')
+  expect(await page.locator('audio').evaluate((audio: HTMLAudioElement) => audio.currentTime)).toBe(5)
+})
