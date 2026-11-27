@@ -166,7 +166,8 @@ const VideoRow = memo(function VideoRow({ video, channelLabel, isCurrent, playin
   )
 })
 
-export function HomeView(props: Props) {
+// Memoized: the player ticks up to four times a second and the library need not re-render with it.
+export const HomeView = memo(function HomeView(props: Props) {
   const { hydrated, videos, details, favorites, notes, currentId, playing, stats, channels, onPlay } = props
   const [channelFilter, setChannelFilter] = useState<string | null>(null)
   const shortName = (id?: string) => channels.length > 1 ? channels.find(c => c.id === id)?.name.split(/[의']/)[0].trim() : undefined
@@ -309,7 +310,9 @@ export function HomeView(props: Props) {
         <div className="sticky z-10 glass" style={{ top: 'env(safe-area-inset-top)', borderBottom: '1px solid var(--line)' }}>
           <div className="flex items-center justify-between px-5 pt-3">
             <h2 className="text-[19px] font-bold tracking-tight">全部节目 <span className="text-[13px] font-medium" style={{ color: 'var(--text-3)' }}>{videos.length}</span></h2>
-            <button aria-label="搜索节目" onClick={() => setSearching(s => !s)} className="tap w-9 h-9 rounded-full flex items-center justify-center" style={{ background: 'var(--surface-2)', color: 'var(--text-2)' }}>
+            <button aria-label={searching ? '收起搜索' : '搜索节目'} aria-pressed={searching}
+              // A hidden search box must not keep filtering the list.
+              onClick={() => { if (searching) setQuery(''); setSearching(s => !s) }} className="tap w-9 h-9 rounded-full flex items-center justify-center" style={{ background: 'var(--surface-2)', color: 'var(--text-2)' }}>
               <SearchIcon />
             </button>
           </div>
@@ -365,4 +368,4 @@ export function HomeView(props: Props) {
       </section>
     </div>
   )
-}
+})

@@ -146,15 +146,19 @@ test('shadowing pauses after each sentence for the listener, then carries on wit
   await expect.poll(() => audioLog(page)).toContain('pause@6.96')
 })
 
-test('pressing play during a shadow pause continues at once', async ({ page }) => {
+test('a shadow pause shows as playing; pausing stops there and playing moves on to the next sentence', async ({ page }) => {
   await openTranscript(page)
   await page.getByRole('button', { name: /^跟读练习/ }).click()
   await page.getByRole('button', { name: /^逐句跟读/ }).click()
   await setTime(page, 8.97)
   await expect(page.locator('#seg-1')).toContainText('该你说了')
-  await page.getByRole('button', { name: '开始播放' }).last().click()
-  expect(await audioLog(page)).toEqual(['seeked@8.97', 'pause@8.97', 'play@8.97'])
+  await page.getByRole('button', { name: '暂停播放' }).last().click()
   await expect(page.locator('#seg-1')).not.toContainText('该你说了')
+  await page.waitForTimeout(300)
+  expect(await audioLog(page)).toEqual(['seeked@8.97', 'pause@8.97'])
+  await page.getByRole('button', { name: '开始播放' }).last().click()
+  await page.waitForTimeout(300)
+  expect(await audioLog(page)).toEqual(['seeked@8.97', 'pause@8.97', 'play@8.97'])
 })
 
 test('a long-pressed sentence opens its menu without seeking, and saved sentences play alone from home', async ({ page }) => {
@@ -220,4 +224,93 @@ test('in the background a drill never leaves playback paused', async ({ page }) 
     document.dispatchEvent(new Event('visibilitychange'))
   })
   expect((await audioLog(page)).slice(-3)).toEqual(['seeked@13.96', 'pause@13.96', 'play@13.96'])
+})
+
+test.describe('gestures', () => {
+  test.use({ hasTouch: true })
+
+  /** Dispatches a one-finger drag through `points`, holding still for `holdMs` before lifting. */
+  async function drag(page: import('@playwright/test').Page, selector: string, points: [number, number][], holdMs = 0) {
+    await page.locator(selector).first().evaluate(async (el, { points, holdMs }) => {
+      const touch = (x: number, y: number) => new Touch({ identifier: 1, target: el, clientX: x, clientY: y })
+      const fire = (type: string, [x, y]: [number, number]) => el.dispatchEvent(new TouchEvent(type, {
+        bubbles: true, cancelable: true, touches: type === 'touchend' ? [] : [touch(x, y)], changedTouches: [touch(x, y)],
+      }))
+      fire('touchstart', points[0])
+      for (const point of points.slice(1)) { fire('touchmove', point); await new Promise(r => setTimeout(r, 16)) }
+      await new Promise(r => setTimeout(r, holdMs))
+      fire('touchend', points[points.length - 1])
+    }, { points, holdMs })
+  }
+  const down = (from: number, to: number, x = 200): [number, number][] => Array.from({ length: 8 }, (_, i) => [x, from + ((to - from) * i) / 7])
+
+  test('the player springs back from a short drag without replaying its entrance, and closes on a long one', async ({ page }) => {
+    await page.goto('/')
+    await page.getByRole('button', { name: '播放 First episode', exact: true }).click()
+    await page.getByRole('button', { name: '打开播放器' }).click()
+    const player = page.getByRole('dialog', { name: '正在播放' })
+    await expect(player).toBeVisible()
+    await page.waitForTimeout(450)
+    await drag(page, '[data-drag-page] img', down(300, 360), 200)
+    await page.waitForTimeout(100)
+    // The entrance animation must not run again when the drag is let go.
+    expect(await player.evaluate(el => [el, el.parentElement!].flatMap(e => e.getAnimations())
+      .filter(a => (a as CSSAnimation).animationName === 'sheet-up' && a.playState === 'running').length)).toBe(0)
+    await expect(player).toBeVisible()
+    await expect.poll(() => player.evaluate(el => el.style.transform)).toBe('')
+    await drag(page, '[data-drag-page] img', down(300, 560), 200)
+    await expect(player).toHaveCount(0)
+  })
+
+  test('a fast flick closes the player, but dragging the subtitles only scrolls them', async ({ page }) => {
+    await page.goto('/')
+    await page.getByRole('button', { name: '播放 First episode', exact: true }).click()
+    await page.getByRole('button', { name: '打开当前节目字幕', exact: true }).click()
+    const player = page.getByRole('dialog', { name: '正在播放' })
+    await page.waitForTimeout(450)
+    await drag(page, '#seg-3', down(300, 600))
+    await page.waitForTimeout(400)
+    await expect(player).toBeVisible()
+    await drag(page, '[data-drag-handle]', down(40, 100))
+    await expect(player).toHaveCount(0)
+  })
+
+  test('sheets close by dragging down, and a sheet reopened while closing stays open', async ({ page }) => {
+    await page.goto('/')
+    await page.getByRole('button', { name: '播放 First episode', exact: true }).click()
+    await page.getByRole('button', { name: '打开当前节目字幕', exact: true }).click()
+    await page.getByRole('button', { name: /^跟读练习/ }).click()
+    const sheet = page.getByRole('dialog', { name: '跟读练习' })
+    await expect(sheet).toBeVisible()
+    await page.waitForTimeout(350)
+    await drag(page, '[aria-label="跟读练习"] h2', down(560, 800), 200)
+    await expect(sheet).toHaveCount(0)
+    await page.getByRole('button', { name: /^跟读练习/ }).click()
+    await page.getByRole('button', { name: /^单句循环/ }).click()
+    await page.getByRole('button', { name: /^跟读练习/ }).click()
+    await page.waitForTimeout(500)
+    await expect(sheet).toBeVisible()
+  })
+
+  test('the mini player opens on a swipe up and changes episode on a sideways swipe', async ({ page }) => {
+    await page.goto('/')
+    await page.getByRole('button', { name: '播放 First episode', exact: true }).click()
+    const box = (await page.getByRole('button', { name: '打开播放器' }).boundingBox())!
+    const y = box.y + box.height / 2
+    await drag(page, '[aria-label="打开播放器"]', [[200, y], [200, y - 20], [200, y - 50], [200, y - 80]], 150)
+    await expect(page.getByRole('dialog', { name: '正在播放' })).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('dialog', { name: '正在播放' })).toHaveCount(0)
+    await drag(page, '[aria-label="打开播放器"]', [[300, y], [270, y], [230, y], [180, y]], 150)
+    await expect(page.getByRole('button', { name: '打开播放器' })).toContainText('Second episode')
+  })
+})
+
+test('closing the search box clears its filter', async ({ page }) => {
+  await page.goto('/')
+  await page.getByRole('button', { name: '搜索节目' }).click()
+  await page.getByRole('textbox', { name: '搜索节目标题' }).fill('zzz-no-match')
+  await expect(page.getByText('没有找到「zzz-no-match」')).toBeVisible()
+  await page.getByRole('button', { name: '收起搜索' }).click()
+  await expect(page.getByRole('button', { name: '播放 First episode', exact: true })).toBeVisible()
 })

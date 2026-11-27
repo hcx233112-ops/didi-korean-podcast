@@ -1,6 +1,7 @@
 'use client'
 
 import { memo, useEffect, useRef, useState } from 'react'
+import { useDragDismiss } from '@/hooks/use-drag-dismiss'
 import { DRILL_LABEL, type DrillMode } from '@/lib/drill'
 import { type Video, formatTime } from '@/lib/library'
 import { BackIcon, BookmarkIcon, ChevronDown, ForwardIcon, HeartIcon, MoonIcon, NoteIcon, PauseIcon, PlayIcon, RepeatIcon, ReplayIcon, TextIcon } from './icons'
@@ -13,27 +14,61 @@ export function MiniPlayer({ video, playing, progress, timerLabel, drillLabel, o
   video: Video; playing: boolean; progress: number; timerLabel: string | null; drillLabel: string | null
   onToggle: () => void; onOpen: (page: 0 | 1) => void; onPrev: () => void; onNext: () => void
 }) {
-  const start = useRef<{ x: number; y: number } | null>(null)
-  const [dx, setDx] = useState(0)
+  const box = useRef<HTMLDivElement>(null)
+  const [shift, setShift] = useState<{ x: number; y: number } | null>(null)
+  const actions = useRef({ onOpen, onPrev, onNext })
+  useEffect(() => { actions.current = { onOpen, onPrev, onNext } })
+  useEffect(() => {
+    const el = box.current
+    if (!el) return
+    let start: { x: number; y: number } | null = null, axis: 'x' | 'y' | null = null, last = { x: 0, y: 0, t: 0, vy: 0 }
+    const down = (e: TouchEvent) => {
+      if (e.touches.length !== 1) { start = null; return }
+      start = { x: e.touches[0].clientX, y: e.touches[0].clientY }; axis = null; last = { ...start, t: e.timeStamp, vy: 0 }
+    }
+    const move = (e: TouchEvent) => {
+      if (!start) return
+      const t = e.touches[0], dx = t.clientX - start.x, dy = t.clientY - start.y
+      if (!axis) {
+        if (Math.hypot(dx, dy) < 6) return
+        axis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y'
+      }
+      if (e.cancelable) e.preventDefault()
+      if (e.timeStamp > last.t) last = { x: t.clientX, y: t.clientY, t: e.timeStamp, vy: (t.clientY - last.y) / (e.timeStamp - last.t) }
+      setShift(axis === 'x' ? { x: Math.max(-110, Math.min(110, dx)), y: 0 } : { x: 0, y: Math.max(-90, Math.min(0, dy)) })
+    }
+    const up = (e: TouchEvent) => {
+      const s = start
+      start = null
+      setShift(null)
+      if (!s || !axis || e.type !== 'touchend') return
+      const t = e.changedTouches[0], dx = t.clientX - s.x, dy = t.clientY - s.y
+      if (axis === 'y' && (dy < -50 || (dy < -15 && last.vy < -0.4 && e.timeStamp - last.t < 100))) actions.current.onOpen(0)
+      else if (axis === 'x' && Math.abs(dx) > 70) { if (dx < 0) actions.current.onNext(); else actions.current.onPrev() }
+    }
+    el.addEventListener('touchstart', down, { passive: true })
+    el.addEventListener('touchmove', move, { passive: false })
+    el.addEventListener('touchend', up)
+    el.addEventListener('touchcancel', up)
+    return () => {
+      el.removeEventListener('touchstart', down); el.removeEventListener('touchmove', move)
+      el.removeEventListener('touchend', up); el.removeEventListener('touchcancel', up)
+    }
+  }, [])
+  const hint = shift && Math.abs(shift.x) > 70 ? (shift.x < 0 ? '松手切到下一集' : '松手切到上一集') : shift && shift.y < -50 ? '松手展开' : null
   return (
     <div className="fixed left-0 right-0 z-30 px-2.5" style={{ bottom: 'calc(env(safe-area-inset-bottom) + 8px)' }}>
-      <div className="glass rounded-[20px] overflow-hidden shadow-2xl" style={{ border: '1px solid var(--line)' }}
-        onTouchStart={e => { start.current = { x: e.touches[0].clientX, y: e.touches[0].clientY } }}
-        onTouchMove={e => { if (start.current) setDx(Math.max(-80, Math.min(80, e.touches[0].clientX - start.current.x))) }}
-        onTouchEnd={e => {
-          const s = start.current; start.current = null; setDx(0)
-          if (!s) return
-          const t = e.changedTouches[0], mx = t.clientX - s.x, my = t.clientY - s.y
-          if (my < -40 && Math.abs(my) > Math.abs(mx)) onOpen(0)
-          else if (Math.abs(mx) > 60 && Math.abs(mx) > Math.abs(my)) { if (mx < 0) onNext(); else onPrev() }
-        }}>
-        <div className="flex items-center gap-3 pl-2.5 pr-2 py-2" style={{ transform: `translateX(${dx * 0.4}px)`, transition: dx ? 'none' : 'transform .25s var(--ease)' }}>
+      <div ref={box} className="glass rounded-[20px] overflow-hidden shadow-2xl" style={{
+        border: '1px solid var(--line)', touchAction: 'none',
+        transform: shift?.y ? `translateY(${shift.y * 0.5}px)` : undefined, transition: shift ? 'none' : 'transform .25s var(--ease)',
+      }}>
+        <div className="flex items-center gap-3 pl-2.5 pr-2 py-2" style={{ transform: `translateX(${(shift?.x ?? 0) * 0.4}px)`, transition: shift ? 'none' : 'transform .25s var(--ease)' }}>
           <button aria-label="打开播放器" onClick={() => onOpen(0)} className="flex items-center gap-3 flex-1 min-w-0 text-left">
             <img src={video.thumbnail} alt="" className="w-11 h-11 rounded-xl object-cover flex-shrink-0" />
             <div className="min-w-0 flex-1">
               <p className="text-[14px] font-semibold truncate">{video.title}</p>
-              <p className="text-[12px] truncate" style={{ color: timerLabel || drillLabel ? 'var(--accent)' : 'var(--text-3)' }}>
-                {[timerLabel && `${timerLabel}后停止`, drillLabel].filter(Boolean).join(' · ') || '左右滑动切换 · 上滑展开'}
+              <p className="text-[12px] truncate" style={{ color: hint || timerLabel || drillLabel ? 'var(--accent)' : 'var(--text-3)' }}>
+                {hint || [timerLabel && `${timerLabel}后停止`, drillLabel].filter(Boolean).join(' · ') || '左右滑动切换 · 上滑展开'}
               </p>
             </div>
           </button>
@@ -147,8 +182,14 @@ export function FullPlayer(p: FullPlayerProps) {
   const pager = useRef<HTMLDivElement>(null)
   const list = useRef<HTMLDivElement>(null)
   const [page, setPage] = useState<0 | 1>(p.initialPage)
-  const [pull, setPull] = useState(0)
   const [detached, setDetached] = useState(false)
+  // Drag down from the header, or anywhere on the now-playing page while it is scrolled to the top.
+  const drag = useDragDismiss<HTMLDivElement>(p.onClose, target => {
+    if (target.closest('input, textarea')) return false
+    if (target.closest('[data-drag-handle]')) return true
+    const page0 = target.closest('[data-drag-page]') as HTMLElement | null
+    return !!page0 && page0.scrollTop <= 0
+  })
   const detachTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
@@ -215,25 +256,17 @@ export function FullPlayer(p: FullPlayerProps) {
   }
   useEffect(() => () => { if (press.current) clearTimeout(press.current.timer) }, [])
 
-  // Drag the handle area down to dismiss.
-  const dragStart = useRef<number | null>(null)
-  const handlers = {
-    onTouchStart: (e: React.TouchEvent) => { dragStart.current = e.touches[0].clientY },
-    onTouchMove: (e: React.TouchEvent) => { if (dragStart.current !== null) setPull(Math.max(0, e.touches[0].clientY - dragStart.current)) },
-    onTouchEnd: () => { dragStart.current = null; if (pull > 110) p.onClose(); setPull(0) },
-  }
-
   return (
-    <div role="dialog" aria-modal="true" aria-label="正在播放" className="fixed inset-0 z-50 flex flex-col"
+    <div className="fixed inset-0 z-50" style={{ animation: `${p.closing ? 'sheet-down' : 'sheet-up'} .38s var(--ease) both`, pointerEvents: p.closing ? 'none' : undefined }}>
+    <div ref={drag.ref} role="dialog" aria-modal="true" aria-label="正在播放" className="absolute inset-0 flex flex-col overflow-hidden"
       style={{
         backgroundColor: 'var(--bg)',
         backgroundImage: `linear-gradient(180deg, rgb(${p.tint}) 0%, rgb(${p.tint} / .55) 38%, rgb(${p.tint} / 0) 82%)`,
-        transition: 'background 0.8s ease',
-        animation: pull ? 'none' : `${p.closing ? 'sheet-down' : 'sheet-up'} .38s var(--ease) both`,
-        transform: pull ? `translateY(${pull}px)` : undefined,
-        borderRadius: pull ? 28 : 0,
+        transform: drag.offset ? `translateY(${drag.offset}px)` : undefined,
+        transition: drag.dragging ? 'background 0.8s ease' : 'background 0.8s ease, transform .3s var(--ease), border-radius .3s var(--ease)',
+        borderRadius: drag.offset ? 28 : 0,
       }}>
-      <div {...handlers} className="flex-shrink-0 px-4" style={{ paddingTop: 'calc(env(safe-area-inset-top) + 6px)' }}>
+      <div data-drag-handle className="flex-shrink-0 px-4" style={{ paddingTop: 'calc(env(safe-area-inset-top) + 6px)' }}>
         <div className="w-10 h-[5px] rounded-full mx-auto mb-2" style={{ background: 'rgba(255,255,255,.35)' }} />
         <div className="flex items-center">
           <button aria-label="收起播放器" onClick={p.onClose} className="tap w-10 h-10 flex items-center justify-center"><ChevronDown /></button>
@@ -255,7 +288,7 @@ export function FullPlayer(p: FullPlayerProps) {
       <div ref={pager} className="flex-1 min-h-0 flex overflow-x-auto overflow-y-hidden no-scrollbar snap-x snap-mandatory"
         onScroll={e => { const el = e.currentTarget; const next = el.scrollLeft > el.clientWidth / 2 ? 1 : 0; if (next !== page) setPage(next) }}>
         {/* Page 1: now playing */}
-        <section className="w-full flex-shrink-0 snap-start flex flex-col px-7 overflow-y-auto no-scrollbar" aria-label="播放">
+        <section data-drag-page className="w-full flex-shrink-0 snap-start flex flex-col px-7 overflow-y-auto no-scrollbar" aria-label="播放" style={{ overscrollBehavior: 'none' }}>
           <div className="flex-1 min-h-4" />
           {/* hqdefault is letterboxed 4:3; a 16:9 cover crop removes the bars. */}
           <img src={p.video.thumbnail.replace('mqdefault', 'hqdefault')} alt="" className="w-full aspect-video object-cover rounded-[24px] shadow-2xl mx-auto"
@@ -346,6 +379,7 @@ export function FullPlayer(p: FullPlayerProps) {
         </section>
       </div>
     </div>
+    </div>
   )
 }
 
@@ -357,15 +391,29 @@ export function Sheet({ title, closing, onClose, children, z = 70 }: { title: st
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
+  // Drag down anywhere on the sheet, unless the finger is in a list that is scrolled away from its top.
+  const drag = useDragDismiss<HTMLElement>(onClose, target => {
+    if (target.closest('input, textarea, select')) return false
+    const scroller = target.closest('[data-sheet-scroll]') as HTMLElement | null
+    return !scroller || scroller.scrollTop <= 0
+  })
   return (
-    <div className="fixed inset-0 flex items-end" style={{ zIndex: z, background: 'rgba(0,0,0,.5)', animation: `${closing ? 'fade-out' : 'fade-in'} .28s ease both` }} onClick={onClose}>
-      <section role="dialog" aria-modal="true" aria-label={title} onClick={e => e.stopPropagation()}
-        className="w-full rounded-t-[28px] px-5 pt-3"
-        style={{ background: 'var(--surface)', paddingBottom: 'calc(env(safe-area-inset-bottom) + 20px)', animation: `${closing ? 'sheet-down' : 'sheet-up'} .32s var(--ease) both` }}>
-        <div className="w-10 h-[5px] rounded-full mx-auto mb-4" style={{ background: 'var(--line)' }} />
-        <h2 className="text-[18px] font-bold mb-4">{title}</h2>
-        {children}
-      </section>
+    <div className="fixed inset-0 flex items-end" onClick={onClose}
+      style={{ zIndex: z, background: `rgba(0,0,0,${0.5 * (1 - Math.min(1, drag.offset / 400))})`, animation: `${closing ? 'fade-out' : 'fade-in'} .28s ease both`, pointerEvents: closing ? 'none' : undefined }}>
+      <div className="w-full" style={{ animation: `${closing ? 'sheet-down' : 'sheet-up'} .32s var(--ease) both` }}>
+        <section ref={drag.ref} role="dialog" aria-modal="true" aria-label={title} onClick={e => e.stopPropagation()}
+          className="w-full rounded-t-[28px] px-5 pt-3"
+          style={{
+            background: 'var(--surface)', paddingBottom: 'calc(env(safe-area-inset-bottom) + 20px)',
+            transform: drag.offset ? `translateY(${drag.offset}px)` : undefined, transition: drag.dragging ? 'none' : 'transform .3s var(--ease)',
+          }}>
+          <div className="w-10 h-[5px] rounded-full mx-auto mb-4" style={{ background: 'var(--line)' }} />
+          <h2 className="text-[18px] font-bold mb-4">{title}</h2>
+          <div data-sheet-scroll className="overflow-y-auto -mx-5 px-5" style={{ maxHeight: 'calc(86dvh - 90px)', overscrollBehavior: 'contain' }}>
+            {children}
+          </div>
+        </section>
+      </div>
     </div>
   )
 }

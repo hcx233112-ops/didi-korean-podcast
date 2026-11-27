@@ -60,7 +60,7 @@ export function SegmentMenu({ seg, lang, saved, looping, onLoop, onToggleSave, o
       {words.length > 0 && (
         <>
           <p className="text-[12px] font-semibold mt-4 mb-2" style={{ color: 'var(--text-2)' }}>点词查{lang === 'en' ? '有道' : 'Naver 韩中'}词典</p>
-          <div className="flex flex-wrap gap-2 max-h-[22dvh] overflow-y-auto">
+          <div data-sheet-scroll className="flex flex-wrap gap-2 max-h-[22dvh] overflow-y-auto">
             {words.map(w => (
               <a key={w} href={dictionaryUrl(w, lang)} target="_blank" rel="noopener noreferrer"
                 className="tap px-3 py-1.5 rounded-full text-[14px]" style={{ background: 'var(--surface-2)', color: 'var(--text)' }}>{w}</a>
@@ -100,7 +100,7 @@ export function PhraseBook({ phrases, savedKeys, videos, playingKey, onPlay, onT
           className="tap px-3 py-1.5 rounded-full text-[12px] font-semibold"
           style={{ background: hideZh ? 'var(--accent-soft)' : 'var(--surface-2)', color: hideZh ? 'var(--accent)' : 'var(--text-2)' }}>遮住翻译</button>
       </div>
-      <div className="max-h-[62dvh] overflow-y-auto -mx-5 px-5 flex flex-col gap-2.5 pb-1">
+      <div data-sheet-scroll className="max-h-[62dvh] overflow-y-auto -mx-5 px-5 flex flex-col gap-2.5 pb-1">
         {list.map(p => {
           const saved = savedKeys.has(p.key), video = videos.get(p.videoId)
           const hidden = hideZh && !revealed.has(p.key)

@@ -72,12 +72,12 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
   const [drill, setDrill] = useState<DrillMode>('off')
   const [gapScale, setGapScale] = useState(1.5)
   const [drillWait, setDrillWait] = useState<{ idx: number; ms: number; key: number } | null>(null)
+  const [waiting, setWaiting] = useState(false)
 
   const sync = usePodcastSync()
   const { favorites, videoDetails, videoProgress, saveProgress, getProgress, syncNow, phrases } = sync
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const deadlineRef = useRef<number | null>(null)
   const blockAutoAdvanceRef = useRef(false)
@@ -103,6 +103,9 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
   const oneShotRef = useRef<{ id: string; end: number } | null>(null)
   const drillPauseRef = useRef(false)
   const sheetRef = useRef<SheetName | null>(null)
+  const sheetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const playerTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const playerOpenRef = useRef(false)
   // Re-read on return: an iOS home-screen app can sit in the background for days.
   const [clock, setClock] = useState(() => Date.now())
   useEffect(() => {
@@ -254,6 +257,7 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
     clearTimeout(w.timer)
     waitRef.current = null
     setDrillWait(null)
+    setWaiting(false)
     return true
   }
 
@@ -269,7 +273,7 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
 
   function finishWait() {
     checkTimer()
-    if (blockAutoAdvanceRef.current) { cancelWait(); return }
+    if (blockAutoAdvanceRef.current) { consumeWait(); return }
     if (consumeWait() && audioRef.current) void requester.play(audioRef.current)
   }
   const finishWaitRef = useRef(finishWait)
@@ -308,6 +312,7 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
       requester.cancel()
       a.pause()
       waitRef.current = { timer: setTimeout(() => finishWaitRef.current(), step.waitMs), resumeAt: step.resumeAt, next: step.next }
+      setWaiting(true)
       if (mode === 'shadow') setDrillWait({ idx: drillIdxRef.current, ms: step.waitMs, key: Date.now() })
     }
   }
@@ -368,7 +373,7 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
       artwork: [{ src: video.thumbnail.replace('mqdefault', 'hqdefault'), sizes: '480x360', type: 'image/jpeg' }],
     })
     navigator.mediaSession.setActionHandler('play', () => requestPlayback())
-    navigator.mediaSession.setActionHandler('pause', () => { cancelWait(); requester.cancel(); audioRef.current?.pause(); setPlaying(false) })
+    navigator.mediaSession.setActionHandler('pause', () => { consumeWait(); requester.cancel(); audioRef.current?.pause(); setPlaying(false) })
     navigator.mediaSession.setActionHandler('seekbackward', () => skip(-15))
     navigator.mediaSession.setActionHandler('seekforward', () => skip(30))
     navigator.mediaSession.setActionHandler('seekto', d => { if (audioRef.current && typeof d.seekTime === 'number') audioRef.current.currentTime = d.seekTime })
@@ -397,8 +402,6 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
     a.src = audioUrl(video.id)
     a.playbackRate = rate
     requestPlayback(automatic)
-    if (pollRef.current) clearInterval(pollRef.current)
-    pollRef.current = setInterval(() => tickRef.current(), 1000)
     setupMediaSession(video)
     fetch(`/data/transcripts/${encodeURIComponent(video.id)}.json`).catch(() => {})
   }
@@ -419,6 +422,7 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
   function togglePlay() {
     const a = audioRef.current
     if (!a) return
+    if (waitRef.current) { consumeWait(); setPlaying(false); return }
     if (a.paused) requestPlayback()
     else { requester.cancel(); a.pause(); setPlaying(false) }
   }
@@ -470,7 +474,7 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
     setTimeLeft(remaining)
     if (remaining === 0) {
       blockAutoAdvanceRef.current = true
-      cancelWait()
+      consumeWait()
       requester.cancel()
       deadlineRef.current = null
       if (timerRef.current) clearInterval(timerRef.current)
@@ -495,8 +499,9 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
 
   useEffect(() => () => {
     if (waitRef.current) clearTimeout(waitRef.current.timer)
+    if (sheetTimer.current) clearTimeout(sheetTimer.current)
+    if (playerTimer.current) clearTimeout(playerTimer.current)
     if (timerRef.current) clearInterval(timerRef.current)
-    if (pollRef.current) clearInterval(pollRef.current)
     transcriptLoader.cancel()
     requester.cancel()
   }, [transcriptLoader, requester])
@@ -507,11 +512,35 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
     if (audioRef.current) audioRef.current.playbackRate = next
   }
 
-  function openSheet(name: SheetName) { setClosingSheet(false); setSheet(name) }
+  // A pending close must never take down a layer that was reopened before it finished.
+  function openSheet(name: SheetName) {
+    if (sheetTimer.current) { clearTimeout(sheetTimer.current); sheetTimer.current = null }
+    setClosingSheet(false); setSheet(name)
+  }
+  function closeSheet() {
+    if (sheetTimer.current) clearTimeout(sheetTimer.current)
+    setClosingSheet(true)
+    sheetTimer.current = setTimeout(() => { sheetTimer.current = null; setSheet(null); setClosingSheet(false) }, 280)
+  }
+  function openPlayer(page: 0 | 1) {
+    if (playerTimer.current) { clearTimeout(playerTimer.current); playerTimer.current = null }
+    setClosingPlayer(false); setPlayer({ page })
+  }
+  function closePlayer() {
+    if (playerTimer.current) clearTimeout(playerTimer.current)
+    setClosingPlayer(true)
+    playerTimer.current = setTimeout(() => { playerTimer.current = null; setPlayer(null); setClosingPlayer(false) }, 360)
+  }
   useEffect(() => { sheetRef.current = sheet }, [sheet])
-  function closeSheet() { setClosingSheet(true); setTimeout(() => { setSheet(null); setClosingSheet(false) }, 280) }
-  function openPlayer(page: 0 | 1) { setClosingPlayer(false); setPlayer({ page }) }
-  function closePlayer() { setClosingPlayer(true); setTimeout(() => { setPlayer(null); setClosingPlayer(false) }, 360) }
+  useEffect(() => { playerOpenRef.current = player !== null && !closingPlayer }, [player, closingPlayer])
+
+  // The subtitle highlight follows playback four times a second while the full player is open.
+  const hasEpisode = current !== null, playerOpen = player !== null
+  useEffect(() => {
+    if (!hasEpisode) return
+    const interval = setInterval(() => tickRef.current(), playerOpen ? 250 : 1000)
+    return () => clearInterval(interval)
+  }, [hasEpisode, playerOpen])
 
   function saveNote(id: string, text: string) {
     const t = text.trim()
@@ -620,8 +649,8 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
   const currentSegIdx = useMemo(() => segmentAt(segments, elapsed), [segments, elapsed])
 
   // Stable callbacks keep memoized rows from re-rendering every second.
-  const handlers = useRef({ play, togglePlay, openPlayer, skip, replaySentence, setDrillMode, cancelWait, requestPlayback })
-  handlers.current = { play, togglePlay, openPlayer, skip, replaySentence, setDrillMode, cancelWait, requestPlayback }
+  const handlers = useRef({ play, togglePlay, openPlayer, closePlayer, skip, replaySentence, setDrillMode, cancelWait, requestPlayback })
+  handlers.current = { play, togglePlay, openPlayer, closePlayer, skip, replaySentence, setDrillMode, cancelWait, requestPlayback }
   // Tapping the episode that is already loaded opens it rather than pausing it.
   const onPlay = useCallback((v: Video) => {
     if (currentIdRef.current === v.id && audioRef.current) handlers.current.openPlayer(0)
@@ -649,9 +678,10 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey || sheetRef.current || !audioRef.current) return
+      const h = handlers.current
+      if (e.key === 'Escape') { if (playerOpenRef.current) h.closePlayer(); return }
       const target = e.target as HTMLElement | null
       if (target?.closest?.('input, textarea, select, [contenteditable="true"]')) return
-      const h = handlers.current
       if (e.key === ' ') {
         if (target?.closest?.('button, a, [role="button"]')) return
         e.preventDefault(); h.togglePlay()
@@ -676,6 +706,7 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
   }, [stats, videoProgress, clock])
   const phraseOfDay = useMemo(() => pickOfDay(phrases, dayKey(new Date(clock))), [phrases, clock])
 
+  const shownPlaying = playing || waiting
   const timerLabel = timeLeft !== null ? formatTime(timeLeft) : stopAfterCurrent ? '本集结束' : null
   const progress = duration > 0 ? elapsed / duration : 0
 
@@ -685,7 +716,7 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
       <div className="fixed top-0 inset-x-0 z-20 glass" style={{ height: 'env(safe-area-inset-top)' }} />
 
       <HomeView hydrated={hydrated} videos={videos} details={videoDetails} favorites={favorites} notes={notes}
-        currentId={current?.id ?? null} playing={playing} stats={homeStats} channels={channels}
+        currentId={current?.id ?? null} playing={shownPlaying} stats={homeStats} channels={channels}
         listError={listError} onRetryList={onRetryList} onPlay={onPlay} onContinue={onContinue} now={clock} onToggleFav={onToggleFav}
         onResetProgress={onResetProgress} onOpenSettings={onOpenSettings}
         phraseCount={phrases.length} phraseOfDay={phraseOfDay} onOpenPhrases={onOpenPhrases} />
@@ -693,13 +724,14 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
       {playbackError && (
         <div role="alert" className="fixed left-3 right-3 z-40 p-3.5 rounded-2xl text-sm flex items-center gap-3 glass" style={{ bottom: 'calc(env(safe-area-inset-bottom) + 92px)', border: '1px solid var(--line)' }}>
           <p className="flex-1">{playbackError}</p>
-          <button className="tap font-semibold" style={{ color: 'var(--accent)' }} onClick={() => current && play(current)}>重试播放</button>
+          {current && <button className="tap font-semibold" style={{ color: 'var(--accent)' }} onClick={() => play(current)}>重试播放</button>}
+          <button aria-label="关闭提示" className="tap w-7 h-7 flex items-center justify-center text-[15px]" style={{ color: 'var(--text-3)' }} onClick={() => setPlaybackError(null)}>✕</button>
         </div>
       )}
 
       {current && <div style={{ height: 'calc(env(safe-area-inset-bottom) + 96px)' }} />}
       {current && !player && (
-        <MiniPlayer video={current} playing={playing} progress={progress} timerLabel={timerLabel}
+        <MiniPlayer video={current} playing={shownPlaying} progress={progress} timerLabel={timerLabel}
           drillLabel={drill !== 'off' ? DRILL_LABEL[drill] : playingPhrase ? '只播这一句' : null}
           onToggle={togglePlay} onOpen={openPlayer}
           onPrev={() => { const v = nextOf(current.id, -1); if (v) play(v) }}
@@ -708,7 +740,7 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
 
       {current && player && (
         <FullPlayer video={current} channelName={channelOf(current).name} initialPage={player.page} closing={closingPlayer} tint={tint}
-          playing={playing} elapsed={elapsed} duration={duration} rate={rate} timerLabel={timerLabel}
+          playing={shownPlaying} elapsed={elapsed} duration={duration} rate={rate} timerLabel={timerLabel}
           isFav={favorites.has(current.id)} hasNote={!!notes[current.id]}
           segments={segments} transcriptLoading={transcriptLoading} transcriptError={transcriptError}
           currentSegIdx={currentSegIdx} showTranslation={showTranslation}
