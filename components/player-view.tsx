@@ -189,7 +189,7 @@ export function FullPlayer(p: FullPlayerProps) {
     if (target.closest('[data-drag-handle]')) return true
     const page0 = target.closest('[data-drag-page]') as HTMLElement | null
     return !!page0 && page0.scrollTop <= 0
-  })
+  }, p.closing)
   const detachTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
@@ -396,7 +396,7 @@ export function Sheet({ title, closing, onClose, children, z = 70 }: { title: st
     if (target.closest('input, textarea, select')) return false
     const scroller = target.closest('[data-sheet-scroll]') as HTMLElement | null
     return !scroller || scroller.scrollTop <= 0
-  })
+  }, closing)
   return (
     <div className="fixed inset-0 flex items-end" onClick={onClose}
       style={{ zIndex: z, background: `rgba(0,0,0,${0.5 * (1 - Math.min(1, drag.offset / 400))})`, animation: `${closing ? 'fade-out' : 'fade-in'} .28s ease both`, pointerEvents: closing ? 'none' : undefined }}>

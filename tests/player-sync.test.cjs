@@ -126,3 +126,33 @@ test('StrictMode effect cleanup does not leave the next mount stuck behind an ab
     assert.equal(app.render().status,'已同步')
   }finally{app.cleanup();Object.assign(global,original)}
 })
+
+test('a device holding more records than the cloud allows keeps them instead of wiping them', () => {
+  const saved = { version: 2, favorites: {}, progress: {}, phrases: {} }
+  for (let i = 0; i < 2001; i++) saved.phrases[`${id}@${i}`] = { value: false, updatedAt: 10, start: 0, end: 0, text: '', zh: '' }
+  const local = readLocalSync(storage({ 'podcast-sync-v2': JSON.stringify(saved) }))
+  assert.equal(Object.keys(local.phrases).length, 2001)
+})
+
+test('a full sentence book forgets its oldest removal to make room, and refuses once every slot is a saved sentence', async () => {
+  const original={localStorage:global.localStorage,window:global.window,fetch:global.fetch}
+  const phrase = (value, updatedAt) => ({ value, updatedAt, start: 1, end: 2, text: value ? 'x' : '', zh: '' })
+  const saved = { version: 2, favorites: {}, progress: {}, phrases: {} }
+  for (let i = 0; i < 1999; i++) saved.phrases[`${id}@${i}`] = phrase(true, 1000 + i)
+  saved.phrases[`${id}@9999`] = phrase(false, 500)
+  global.localStorage=storage({ 'podcast-sync-v2': JSON.stringify(saved) });global.window={addEventListener(){},removeEventListener(){}}
+  global.fetch=async()=>{throw Error('unexpected request')}
+  const app=harness()
+  try{
+    let api=app.render()
+    assert.equal(api.setPhrase(`${id}@5000`, { value: true, start: 50, end: 51, text: 'new', zh: '' }), true)
+    let stored=JSON.parse(localStorage.getItem('podcast-sync-v2')).phrases
+    assert.equal(Object.keys(stored).length, 2000)
+    assert.equal(stored[`${id}@9999`], undefined)
+    api=app.render()
+    assert.equal(api.setPhrase(`${id}@6000`, { value: true, start: 60, end: 61, text: 'more', zh: '' }), false)
+    assert.equal(api.setPhrase(`${id}@0`, { value: false, start: 1, end: 2, text: '', zh: '' }), true)
+    stored=JSON.parse(localStorage.getItem('podcast-sync-v2')).phrases
+    assert.equal(stored[`${id}@0`].value, false)
+  }finally{app.cleanup();Object.assign(global,original)}
+})

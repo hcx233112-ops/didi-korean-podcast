@@ -133,3 +133,17 @@ test('data from clients without sentences stays valid, and malformed sentences a
   ]) assert.throws(() => validateSyncData({ ...emptySyncData(), phrases: { [key]: item } }), undefined, key)
   assert.throws(() => validateSyncData({ ...emptySyncData(), phrases: [] }))
 })
+
+test('more records than the cloud allows are refused as too large, but stay readable on the device', async () => {
+  const data = emptySyncData()
+  for (let i = 0; i < 2001; i++) data.phrases[`${id}@${i}`] = { value: false, updatedAt: 10, start: 0, end: 0, text: '', zh: '' }
+  assert.throws(() => validateSyncData(data), RangeError)
+  assert.equal(Object.keys(validateSyncData(data, Date.now(), { limits: false }).phrases).length, 2001)
+  process.env.PODCAST_SYNC_SECRET = 'a'.repeat(32)
+  process.env.KV_REST_API_URL = 'https://mock.invalid'
+  process.env.KV_REST_API_TOKEN = 'mock'
+  const { POST } = require('../app/api/sync/route.ts')
+  const headers = { authorization: `Bearer ${'a'.repeat(32)}`, 'content-type': 'application/json' }
+  const response = await POST(new Request('http://localhost/api/sync', { method: 'POST', headers, body: JSON.stringify(data) }))
+  assert.equal(response.status, 413)
+})

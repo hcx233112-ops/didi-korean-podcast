@@ -16,12 +16,13 @@ export function emptySyncData(): SyncData {
 const VIDEO_ID = /^[A-Za-z0-9_-]{11}$/
 export const PHRASE_ID = /^[A-Za-z0-9_-]{11}@\d{1,9}$/
 export const MAX_PHRASE_TEXT = 600
-const MAX_RECORDS = 2000
+export const MAX_RECORDS = 2000
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
-export function validateSyncData(value: unknown, now = Date.now()): SyncData {
+/** `limits: false` for data already on this device: the record caps protect the server, and refusing local data would lose it. */
+export function validateSyncData(value: unknown, now = Date.now(), { limits = true } = {}): SyncData {
   // Phrases arrived later, so data from older clients and stored states may lack them.
   if (!record(value) || value.version !== 2 || !record(value.favorites) || !record(value.progress)
     || (value.phrases !== undefined && !record(value.phrases))) throw new Error('Invalid sync data')
@@ -29,7 +30,7 @@ export function validateSyncData(value: unknown, now = Date.now()): SyncData {
   const timestamp = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 && v <= now + 300_000
   for (const kind of ['favorites', 'progress'] as const) {
     const entries = Object.entries(value[kind] as Record<string, unknown>)
-    if (entries.length > MAX_RECORDS) throw new Error('Too many sync records')
+    if (limits && entries.length > MAX_RECORDS) throw new RangeError('Too many sync records')
     for (const [id, item] of entries) {
       if (!VIDEO_ID.test(id) || !record(item) || !timestamp(item.updatedAt)) throw new Error('Invalid sync record')
       if (kind === 'favorites') {
@@ -44,7 +45,7 @@ export function validateSyncData(value: unknown, now = Date.now()): SyncData {
     }
   }
   const phrases = Object.entries((value.phrases ?? {}) as Record<string, unknown>)
-  if (phrases.length > MAX_RECORDS) throw new Error('Too many sync records')
+  if (limits && phrases.length > MAX_RECORDS) throw new RangeError('Too many sync records')
   for (const [id, item] of phrases) {
     if (!PHRASE_ID.test(id) || !record(item) || !timestamp(item.updatedAt) || typeof item.value !== 'boolean'
       || typeof item.start !== 'number' || typeof item.end !== 'number' || !Number.isFinite(item.start) || !Number.isFinite(item.end)

@@ -12,9 +12,12 @@ export function phraseList(records: Record<string, PhraseRecord>): Phrase[] {
     .sort((a, b) => b.savedAt - a.savedAt)
 }
 
+// Cutting between the halves of an emoji leaves text the cloud's JSON parser rejects on every sync.
+const clip = (text: string) => text.slice(0, MAX_PHRASE_TEXT).replace(/[\uD800-\uDBFF]$/, '')
+
 /** The stored form of a transcript sentence; a translation identical to the original is not kept. */
 export function phraseRecord(seg: { start: number; end: number; ko: string; zh: string }) {
   // One malformed record would make the whole sync payload invalid, so clamp rather than trust the transcript.
   const start = Math.max(0, seg.start || 0)
-  return { value: true, start, end: Math.max(start, seg.end || 0), text: seg.ko.trim().slice(0, MAX_PHRASE_TEXT), zh: !seg.zh || seg.zh === seg.ko ? '' : seg.zh.slice(0, MAX_PHRASE_TEXT) }
+  return { value: true, start, end: Math.max(start, seg.end || 0), text: clip(seg.ko.trim()), zh: !seg.zh || seg.zh === seg.ko ? '' : clip(seg.zh) }
 }

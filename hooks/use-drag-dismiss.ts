@@ -13,11 +13,13 @@ const SLOP = 6
  * `area` goes only on the elements a drag may start from: a non-passive touchmove listener makes the
  * browser wait for script before scrolling anything inside it, so long lists must stay outside.
  */
-export function useDragDismiss<T extends HTMLElement>(onDismiss: () => void, canStart: (target: Element) => boolean) {
+export function useDragDismiss<T extends HTMLElement>(onDismiss: () => void, canStart: (target: Element) => boolean, closing: boolean) {
   const [offset, setOffset] = useState(0)
   const [dragging, setDragging] = useState(false)
   const latest = useRef({ onDismiss, canStart })
   useEffect(() => { latest.current = { onDismiss, canStart } })
+  // A drag-dismissed layer keeps its offset while it slides away, and drops it if reopened before it is gone.
+  useEffect(() => { if (!closing) setOffset(0) }, [closing])
 
   const handlers = useRef<{ start: (e: TouchEvent) => void; move: (e: TouchEvent) => void; end: (e: TouchEvent) => void } | null>(null)
   if (!handlers.current) {

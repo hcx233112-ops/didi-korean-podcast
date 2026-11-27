@@ -82,3 +82,28 @@ test('the week runs Monday to Sunday and counts only real listening days', () =>
   assert.equal(sunday[0].key, '2026-11-23')
   assert.equal(sunday[6].today, true)
 })
+
+test('a seek landing a hair before a sentence start still drills that sentence', () => {
+  const contiguous = [{ start: 0, end: 3 }, { start: 3, end: 6 }, { start: 6, end: 9 }]
+  const idx = drill.drillAnchor(contiguous, 5.9999)
+  assert.equal(idx, 2)
+  assert.deepEqual(drill.drillStep('loop', contiguous, idx, 5.9999), { kind: 'none' })
+})
+
+test('a long sentence is cut on a whole character, never inside an emoji', () => {
+  const ko = 'a'.repeat(599) + '😀b'
+  const record = phrases.phraseRecord({ start: 0, end: 1, ko, zh: ko + '!' })
+  assert.equal(record.text, 'a'.repeat(599))
+  assert.equal(record.zh, 'a'.repeat(599))
+  assert.doesNotMatch(JSON.stringify(record), /\ud[89ab]/i)
+})
+
+test('the daily sentence stays put while other sentences come and go', () => {
+  const library = require('../lib/library.ts')
+  const items = Array.from({ length: 30 }, (_, i) => ({ key: `abcdefghijk@${i * 100}` }))
+  const pick = library.pickOfDay(items, '2026-11-27')
+  assert.ok(pick)
+  assert.equal(library.pickOfDay([...items].reverse(), '2026-11-27'), pick)
+  for (const other of items) if (other !== pick) assert.equal(library.pickOfDay(items.filter(i => i !== other), '2026-11-27'), pick)
+  assert.equal(library.pickOfDay([], '2026-11-27'), null)
+})

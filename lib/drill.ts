@@ -4,6 +4,8 @@ export interface Span { start: number; end: number }
 export const DRILL_LABEL: Record<DrillMode, string> = { off: '练习', loop: '单句循环', shadow: '逐句跟读' }
 // Stop a hair early so the next sentence's first syllable never leaks through.
 const EARLY = 0.06
+// A seek can land a hair before the time it asked for (Safari snaps to audio frames); it still belongs to the sentence starting there.
+const SNAP = 0.1
 const LOOP_GAP_MS = 600
 
 /** Index of the last segment starting at or before `time`, or -1 before the first. */
@@ -17,7 +19,7 @@ export function segmentAt(segments: Span[], time: number) {
 /** The sentence to drill from `time`: a silent gap belongs to the sentence after it. */
 export function drillAnchor(segments: Span[], time: number) {
   if (!segments.length) return -1
-  const idx = segmentAt(segments, time)
+  const idx = segmentAt(segments, time + SNAP)
   if (idx < 0) return 0
   return time > segments[idx].end && idx + 1 < segments.length ? idx + 1 : idx
 }

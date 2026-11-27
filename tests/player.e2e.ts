@@ -191,6 +191,40 @@ test('a long-pressed sentence opens its menu without seeking, and saved sentence
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem('podcast-sync-v2')!).phrases['abcdefghijk@1000'])).toMatchObject({ value: true, text: 'First line 2', zh: 'Translation 2' })
 })
 
+test('a saved sentence plays from its own start even at the very end, and seeking away lets playback run on', async ({ page }) => {
+  await page.addInitScript(() => {
+    if (localStorage.getItem('podcast-sync-v2')) return
+    const now = Date.now()
+    localStorage.setItem('podcast-sync-v2', JSON.stringify({ version: 2, favorites: {}, progress: {}, phrases: {
+      'lmnopqrstuv@199900': { value: true, updatedAt: now, start: 1999, end: 1999.8, text: 'Last words', zh: '' },
+      'abcdefghijk@1000': { value: true, updatedAt: now - 1, start: 10, end: 14, text: 'First line 2', zh: 'Translation 2' },
+    } }))
+  })
+  const time = () => page.locator('audio').evaluate((audio: HTMLAudioElement) => audio.currentTime)
+  await page.goto('/')
+  await page.getByRole('button', { name: /^打开句子本/ }).click()
+  const book = page.getByRole('dialog', { name: '句子本' })
+  await book.getByRole('button', { name: '播放这一句 Last words' }).click()
+  await expect.poll(time).toBe(1999)
+  await book.getByRole('button', { name: '播放这一句 First line 2' }).click()
+  await expect.poll(time).toBe(10)
+  await setTime(page, 300)
+  await page.waitForTimeout(300)
+  expect(await page.locator('audio').evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(false)
+})
+
+test('a sentence menu closes when the episode changes under it', async ({ page }) => {
+  await openTranscript(page)
+  await page.locator('#seg-2').hover()
+  await page.mouse.down()
+  const menu = page.getByRole('dialog', { name: '这一句' })
+  await expect(menu).toBeVisible()
+  await page.mouse.up()
+  await page.locator('audio').evaluate(audio => audio.dispatchEvent(new Event('ended')))
+  await expect(page.locator('#seg-0')).toContainText('Second line 0')
+  await expect(menu).toHaveCount(0)
+})
+
 test('the week strip counts listening days, and keyboard shortcuts drive playback', async ({ page }) => {
   await page.addInitScript(() => {
     const d = new Date(), key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
@@ -314,6 +348,22 @@ test.describe('gestures', () => {
     await page.getByRole('button', { name: /^跟读练习/ }).click()
     await page.waitForTimeout(500)
     await expect(sheet).toBeVisible()
+  })
+
+  test('a sheet reopened right after being dragged shut is not left pushed down', async ({ page }) => {
+    await page.goto('/')
+    await page.getByRole('button', { name: '播放 First episode', exact: true }).click()
+    await page.getByRole('button', { name: '打开当前节目字幕', exact: true }).click()
+    await page.getByRole('button', { name: /^跟读练习/ }).click()
+    const sheet = page.getByRole('dialog', { name: '跟读练习' })
+    await expect(sheet).toBeVisible()
+    await page.waitForTimeout(350)
+    await drag(page, '[aria-label="跟读练习"] h2', down(560, 800), 200)
+    // Reopen at once, while the dragged sheet is still sliding away.
+    await page.evaluate(() => (document.querySelector('[aria-label^="跟读练习："]') as HTMLElement).click())
+    await page.waitForTimeout(500)
+    await expect(sheet).toBeVisible()
+    expect(await sheet.evaluate(el => el.style.transform)).toBe('')
   })
 
   test('the mini player opens on a swipe up and changes episode on a sideways swipe', async ({ page }) => {

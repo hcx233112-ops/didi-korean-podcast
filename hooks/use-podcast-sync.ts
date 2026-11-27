@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { phraseList } from '@/lib/phrases'
-import { type PhraseRecord, type SyncData, emptySyncData, mergeSyncData, validateSyncData } from '@/lib/sync-data'
+import { MAX_RECORDS, type PhraseRecord, type SyncData, emptySyncData, mergeSyncData, validateSyncData } from '@/lib/sync-data'
 
 const DATA_KEY = 'podcast-sync-v2'
 const SECRET_KEY = 'podcast-sync-secret'
@@ -33,7 +33,7 @@ export function readLocalSync(storage: Pick<Storage, 'getItem' | 'key' | 'length
     }
     try {
       const stored = JSON.parse(storage.getItem(DATA_KEY) || 'null')
-      return stored?.version === 2 ? mergeSyncData(data, validateSyncData(stored)) : data
+      return stored?.version === 2 ? mergeSyncData(data, validateSyncData(stored, Date.now(), { limits: false })) : data
     } catch { return data }
   } catch { return data }
 }
@@ -92,11 +92,15 @@ export function usePodcastSync() {
       }
       if (generation !== generationRef.current) return
       const sent = dataRef.current
+      const body = JSON.stringify(sent)
+      // Browsers refuse keepalive bodies over 64 KB; a plain request still finishes while the page is hidden.
+      const small = new TextEncoder().encode(body).length < 60_000
+      keepaliveRef.current = keepalive && small
       const response = await fetch('/api/sync', {
-        method: 'POST', headers, body: JSON.stringify(sent), keepalive,
+        method: 'POST', headers, body, keepalive: keepalive && small,
         signal: controller.signal,
       })
-      if (!response.ok) throw new Error(response.status === 401 ? '同步口令不正确，请重新输入' : response.status === 429 ? '尝试次数过多，请 10 分钟后再试' : response.status === 503 ? '云同步服务尚未配置，数据仍保存在本地' : `保存失败（${response.status}），请重试`)
+      if (!response.ok) throw new Error(response.status === 401 ? '同步口令不正确，请重新输入' : response.status === 429 ? '尝试次数过多，请 10 分钟后再试' : response.status === 503 ? '云同步服务尚未配置，数据仍保存在本地' : response.status === 413 ? '云同步容量已满，数据仍保存在本地' : `保存失败（${response.status}），请重试`)
       const result = await response.json() as { ok: boolean; data: SyncData }
       if (!result.ok || !result.data) throw new Error('同步响应无效，请重试')
       if (generation !== generationRef.current) return
@@ -128,7 +132,7 @@ export function usePodcastSync() {
     const onStorage = (event: StorageEvent) => {
       if (event.key === DATA_KEY && event.newValue) {
         try {
-          const next = mergeSyncData(dataRef.current, validateSyncData(JSON.parse(event.newValue)))
+          const next = mergeSyncData(dataRef.current, validateSyncData(JSON.parse(event.newValue), Date.now(), { limits: false }))
           if (serialize(next) !== serialize(dataRef.current)) apply(next, true)
         } catch {}
       }
@@ -188,10 +192,19 @@ export function usePodcastSync() {
   }, [apply])
 
   /** Saves (value) or removes a sentence; a removal keeps only a tombstone so older devices cannot revive it. */
+  /** False when the book is full: the cloud keeps at most MAX_RECORDS sentences, removed ones included. */
   const setPhrase = useCallback((key: string, record: Omit<PhraseRecord, 'updatedAt'>) => {
     const next = dataRef.current
+    const phrases = { ...next.phrases }
+    if (!(key in phrases) && Object.keys(phrases).length >= MAX_RECORDS) {
+      // Make room by forgetting the oldest removal; a book full of saved sentences takes no more.
+      const oldest = Object.entries(phrases).filter(([, p]) => !p.value).sort((a, b) => a[1].updatedAt - b[1].updatedAt)[0]
+      if (!oldest || !record.value) return false
+      delete phrases[oldest[0]]
+    }
     const item = record.value ? record : { ...record, text: '', zh: '' }
-    apply({ ...next, phrases: { ...next.phrases, [key]: { ...item, updatedAt: timestamp() } } }, true)
+    apply({ ...next, phrases: { ...phrases, [key]: { ...item, updatedAt: timestamp() } } }, true)
+    return true
   }, [apply])
 
   const phrases = useMemo(() => phraseList(data.phrases), [data.phrases])

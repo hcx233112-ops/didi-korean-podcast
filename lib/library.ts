@@ -69,8 +69,14 @@ export function dailyPick(videos: Video[], details: Record<string, ProgressDetai
 }
 
 /** The same item all day, a different one tomorrow. */
-export function pickOfDay<T>(items: T[], day: string) {
-  return items.length ? items[hash(day) % items.length] : null
+/** The same item all day on every device; saving or removing another item rarely moves it. */
+export function pickOfDay<T extends { key: string }>(items: T[], day: string) {
+  let best: T | null = null, bestScore = Infinity
+  for (const item of items) {
+    const score = hash(`${day}|${item.key}`)
+    if (score < bestScore) { best = item; bestScore = score }
+  }
+  return best
 }
 
 export function groupByMonth(videos: Video[]) {

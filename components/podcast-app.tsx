@@ -100,7 +100,8 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
   const segmentsRef = useRef<{ id: string | null; list: TranscriptSegment[] }>({ id: null, list: [] })
   const loadedRetryRef = useRef(-1)
   const waitRef = useRef<{ timer: ReturnType<typeof setTimeout>; resumeAt: number | null; next: number } | null>(null)
-  const oneShotRef = useRef<{ id: string; end: number } | null>(null)
+  const oneShotRef = useRef<{ id: string; start: number; end: number } | null>(null)
+  const resumeExactRef = useRef(false)
   const drillPauseRef = useRef(false)
   const sheetRef = useRef<SheetName | null>(null)
   const sheetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -281,8 +282,11 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
 
   function onDrillSeeked() {
     cancelWait()
-    const a = audioRef.current, segs = segmentsRef.current
-    drillIdxRef.current = a && segs.id === currentIdRef.current ? drillAnchor(segs.list, a.currentTime || 0) : -1
+    const a = audioRef.current, segs = segmentsRef.current, t = a?.currentTime || 0
+    // Seeking away from a saved sentence that plays on its own ends that one-off play.
+    const shot = oneShotRef.current
+    if (shot && (t < shot.start - 0.5 || t > shot.end)) { oneShotRef.current = null; setPlayingPhrase(null) }
+    drillIdxRef.current = a && segs.id === currentIdRef.current ? drillAnchor(segs.list, t) : -1
   }
 
   function checkDrill() {
@@ -359,8 +363,10 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
     })
     a.addEventListener('loadedmetadata', () => {
       const at = resumeAtRef.current
-      if (at > 0 && a.duration && at < a.duration - 2) a.currentTime = at
+      // A remembered position at the very end restarts the episode; an asked-for start is kept as is.
+      if (at > 0 && a.duration && (resumeExactRef.current || at < a.duration - 2)) a.currentTime = at
       resumeAtRef.current = 0
+      resumeExactRef.current = false
     })
     audioRef.current = a
     return a
@@ -395,6 +401,7 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
     oneShotRef.current = null
     setPlayingPhrase(null)
     const saved = getProgress(video.id)
+    resumeExactRef.current = startAt !== undefined
     resumeAtRef.current = startAt ?? (saved ? resumePosition(saved.pos, saved.dur, saved.updatedAt, Date.now()) : 0)
     setPlaybackError(null)
     setCurrent(video)
@@ -557,12 +564,12 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
   function toggleSegmentSaved(seg: TranscriptSegment) {
     if (!current || !seg.ko.trim()) return
     const key = phraseKey(current.id, seg.start), wasSaved = savedKeys.has(key)
-    sync.setPhrase(key, { ...phraseRecord(seg), value: !wasSaved })
+    if (!sync.setPhrase(key, { ...phraseRecord(seg), value: !wasSaved })) { showToast('句子本已满，先移除一些句子吧'); return }
     showToast(wasSaved ? '已从句子本移除' : '已收藏到句子本')
   }
 
   function togglePhraseFromBook(phrase: Phrase) {
-    sync.setPhrase(phrase.key, { value: !savedKeys.has(phrase.key), start: phrase.start, end: phrase.end, text: phrase.text, zh: phrase.zh })
+    if (!sync.setPhrase(phrase.key, { value: !savedKeys.has(phrase.key), start: phrase.start, end: phrase.end, text: phrase.text, zh: phrase.zh })) showToast('句子本已满，先移除一些句子吧')
   }
 
   /** Plays just one saved sentence, then stops. */
@@ -576,9 +583,13 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
       setElapsed(phrase.start)
       requestPlayback()
     } else play(video, false, phrase.start)
-    oneShotRef.current = { id: video.id, end: phrase.end }
+    oneShotRef.current = { id: video.id, start: phrase.start, end: phrase.end }
     setPlayingPhrase(phrase.key)
   }
+
+  // A sentence menu belongs to the episode it was opened in; saving or looping it in the next one would be wrong.
+  const currentEpisode = current?.id
+  useEffect(() => { if (sheetRef.current === 'segment') closeSheet() }, [currentEpisode]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function openSegmentMenu(index: number) {
     const seg = segments[index]
