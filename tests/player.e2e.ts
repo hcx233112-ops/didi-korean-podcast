@@ -181,7 +181,10 @@ test('a long-pressed sentence opens its menu without seeking, and saved sentence
   await expect.poll(() => audioLog(page)).toEqual(['seeked@10', 'play@10', 'seeked@13.95', 'pause@13.95'])
   await book.getByRole('button', { name: '取消收藏 First line 2' }).click()
   await expect(book.getByRole('button', { name: '重新收藏 First line 2' })).toBeVisible()
-  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('podcast-phrases-v1')!))).toEqual([])
+  const record = await page.evaluate(() => JSON.parse(localStorage.getItem('podcast-sync-v2')!).phrases['abcdefghijk@1000'])
+  expect(record).toMatchObject({ value: false, text: '', start: 10, end: 14 })
+  await book.getByRole('button', { name: '重新收藏 First line 2' }).click()
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('podcast-sync-v2')!).phrases['abcdefghijk@1000'])).toMatchObject({ value: true, text: 'First line 2', zh: 'Translation 2' })
 })
 
 test('the week strip counts listening days, and keyboard shortcuts drive playback', async ({ page }) => {

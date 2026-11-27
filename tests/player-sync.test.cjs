@@ -7,7 +7,7 @@ const sync = require('../lib/sync-data.ts')
 const source = ts.transpileModule(fs.readFileSync(require.resolve('../hooks/use-podcast-sync.ts'), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText
 function moduleWithReact(react) {
   const module = { exports: {} }
-  new Function('require', 'module', 'exports', source)(name => name === 'react' ? react : name === '@/lib/sync-data' ? sync : require(name), module, module.exports)
+  new Function('require', 'module', 'exports', source)(name => name === 'react' ? react : name.startsWith('@/') ? require(`../${name.slice(2)}.ts`) : require(name), module, module.exports)
   return module.exports
 }
 function storage(initial = {}) {
@@ -26,7 +26,7 @@ test('legacy favorites and listening positions migrate without overwriting remot
 test('corrupt legacy favorites do not discard intact v2 progress and deletion records', () => {
   const saved={version:2,favorites:{[id]:{value:false,updatedAt:100}},progress:{[id]:{pos:0,dur:3600,deleted:true,updatedAt:100}}}
   const local=readLocalSync(storage({'podcast-favorites':'broken','podcast-sync-v2':JSON.stringify(saved)}))
-  assert.deepEqual(local,saved)
+  assert.deepEqual(local,{...saved,phrases:{}})
 })
 
 function harness() {

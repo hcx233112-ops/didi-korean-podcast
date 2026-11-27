@@ -1,13 +1,15 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { type SyncData, emptySyncData, mergeSyncData, validateSyncData } from '@/lib/sync-data'
+import { phraseList } from '@/lib/phrases'
+import { type PhraseRecord, type SyncData, emptySyncData, mergeSyncData, validateSyncData } from '@/lib/sync-data'
 
 const DATA_KEY = 'podcast-sync-v2'
 const SECRET_KEY = 'podcast-sync-secret'
 
+const sorted = <T,>(map: Record<string, T>) => Object.fromEntries(Object.entries(map).sort(([a], [b]) => a.localeCompare(b)))
 function serialize(data: SyncData) {
-  return JSON.stringify({ version: 2, favorites: Object.fromEntries(Object.entries(data.favorites).sort(([a], [b]) => a.localeCompare(b))), progress: Object.fromEntries(Object.entries(data.progress).sort(([a], [b]) => a.localeCompare(b))) })
+  return JSON.stringify({ version: 2, favorites: sorted(data.favorites), progress: sorted(data.progress), phrases: sorted(data.phrases) })
 }
 
 export function readLocalSync(storage: Pick<Storage, 'getItem' | 'key' | 'length'>): SyncData {
@@ -49,7 +51,7 @@ function writeLocalSync(data: SyncData) {
 export function usePodcastSync() {
   const [data, setData] = useState<SyncData>(emptySyncData)
   const [secret, setSecret] = useState('')
-  const [status, setStatus] = useState('本地模式：收藏和进度保存在此设备')
+  const [status, setStatus] = useState('本地模式：收藏、进度和句子本保存在此设备')
   const dataRef = useRef(data)
   const secretRef = useRef('')
   const dirtyRef = useRef(false)
@@ -152,12 +154,19 @@ export function usePodcastSync() {
     secretRef.current = trimmed
     setSecret(trimmed)
     try { trimmed ? localStorage.setItem(SECRET_KEY, trimmed) : localStorage.removeItem(SECRET_KEY) } catch {}
-    if (!trimmed) setStatus('本地模式：收藏和进度保存在此设备')
+    if (!trimmed) setStatus('本地模式：收藏、进度和句子本保存在此设备')
     else { dirtyRef.current = true; void synchronize(false, true) }
     return true
   }, [synchronize])
 
-  const timestamp = () => Math.max(Date.now(), ...Object.values(dataRef.current.favorites).map(v => v.updatedAt + 1), ...Object.values(dataRef.current.progress).map(v => v.updatedAt + 1))
+  // Strictly after every known record, so a device with a slow clock still records the latest change as latest.
+  const timestamp = () => {
+    let latest = Date.now()
+    for (const kind of [dataRef.current.favorites, dataRef.current.progress, dataRef.current.phrases]) {
+      for (const item of Object.values(kind)) if (item.updatedAt >= latest) latest = item.updatedAt + 1
+    }
+    return latest
+  }
 
   const toggleFavorite = useCallback((id: string) => {
     const next = dataRef.current
@@ -178,6 +187,14 @@ export function usePodcastSync() {
     apply({ ...next, progress: { ...next.progress, [id]: { pos: 0, dur: next.progress[id]?.dur || 0, deleted: true, updatedAt: timestamp() } } }, true)
   }, [apply])
 
+  /** Saves (value) or removes a sentence; a removal keeps only a tombstone so older devices cannot revive it. */
+  const setPhrase = useCallback((key: string, record: Omit<PhraseRecord, 'updatedAt'>) => {
+    const next = dataRef.current
+    const item = record.value ? record : { ...record, text: '', zh: '' }
+    apply({ ...next, phrases: { ...next.phrases, [key]: { ...item, updatedAt: timestamp() } } }, true)
+  }, [apply])
+
+  const phrases = useMemo(() => phraseList(data.phrases), [data.phrases])
   const favorites = useMemo(() => new Set(Object.entries(data.favorites).filter(([, item]) => item.value).map(([id]) => id)), [data.favorites])
   // Unchanged records keep their identity, so memoized rows skip re-rendering on each save.
   const detailCache = useRef(new WeakMap<object, { pos: number; dur: number; updatedAt: number }>())
@@ -189,5 +206,5 @@ export function usePodcastSync() {
   const videoProgress = useMemo(() => Object.fromEntries(Object.entries(videoDetails).map(([id, item]) => [id, item.pos / item.dur])), [videoDetails])
   const getProgress = useCallback((id: string) => { const item = dataRef.current.progress[id]; return item && !item.deleted ? { pos: item.pos, dur: item.dur, updatedAt: item.updatedAt } : null }, [])
 
-  return { favorites, videoDetails, videoProgress, saveProgress, resetProgress, toggleFavorite, getProgress, secret, status, configureSecret, syncNow: synchronize }
+  return { phrases, setPhrase, favorites, videoDetails, videoProgress, saveProgress, resetProgress, toggleFavorite, getProgress, secret, status, configureSecret, syncNow: synchronize }
 }

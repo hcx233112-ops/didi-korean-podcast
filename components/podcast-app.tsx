@@ -7,7 +7,7 @@ import { coverColor } from '@/lib/cover-color'
 import { DRILL_LABEL, type DrillMode, drillAnchor, drillStep, replayTarget, segmentAt } from '@/lib/drill'
 import { DONE_THRESHOLD, type Video, dayKey, formatTime, mergeChannels, pickOfDay, resumePosition } from '@/lib/library'
 import { STATS_KEY, WEEK_GOAL_DAYS, type ListeningStats, addListening, readStats, streak, weekDays, weekSeconds } from '@/lib/listening-stats'
-import { PHRASES_KEY, type Phrase, phraseKey, readPhrases, togglePhrase } from '@/lib/phrases'
+import { type Phrase, phraseKey, phraseRecord } from '@/lib/phrases'
 import { createPlaybackRequester, createProgressSaver, createTranscriptLoader, remainingTimerSeconds } from '@/lib/player-runtime'
 import { type Channel, HomeView } from './home-view'
 import { FullPlayer, MiniPlayer, Sheet, TimerOptions, type TranscriptSegment } from './player-view'
@@ -66,7 +66,6 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
   const [noteText, setNoteText] = useState('')
   const [secretInput, setSecretInput] = useState('')
   const [stats, setStats] = useState<ListeningStats>({ days: {} })
-  const [phrases, setPhrases] = useState<Phrase[]>([])
   const [menuSeg, setMenuSeg] = useState<TranscriptSegment | null>(null)
   const [playingPhrase, setPlayingPhrase] = useState<string | null>(null)
 
@@ -75,7 +74,7 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
   const [drillWait, setDrillWait] = useState<{ idx: number; ms: number; key: number } | null>(null)
 
   const sync = usePodcastSync()
-  const { favorites, videoDetails, videoProgress, saveProgress, getProgress, syncNow } = sync
+  const { favorites, videoDetails, videoProgress, saveProgress, getProgress, syncNow, phrases } = sync
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -148,7 +147,6 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
       }
       setNotes(loaded)
       setStats(readStats(localStorage))
-      setPhrases(readPhrases(localStorage))
       const gap = Number(localStorage.getItem('podcast-drill-gap') || '1.5')
       if (GAP_SCALES.some(g => g.value === gap)) { setGapScale(gap); gapScaleRef.current = gap }
     } catch {}
@@ -522,27 +520,20 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
     catch { setPlaybackError('备注保存失败，请检查浏览器存储空间') }
   }
 
-  function persistPhrases(next: Phrase[]) {
-    setPhrases(next)
-    try { localStorage.setItem(PHRASES_KEY, JSON.stringify(next)) } catch { setPlaybackError('句子保存失败，请检查浏览器存储空间') }
-  }
-
   const savedKeys = useMemo(() => new Set(phrases.map(p => p.key)), [phrases])
   const currentVideoId = current?.id
   const savedStarts = useMemo(() => new Set(phrases.filter(p => p.videoId === currentVideoId).map(p => p.start)), [phrases, currentVideoId])
   const videoMap = useMemo(() => new Map(videos.map(v => [v.id, v])), [videos])
 
   function toggleSegmentSaved(seg: TranscriptSegment) {
-    if (!current) return
-    const wasSaved = savedKeys.has(phraseKey(current.id, seg.start))
-    persistPhrases(togglePhrase(phrases, current.id, seg))
+    if (!current || !seg.ko.trim()) return
+    const key = phraseKey(current.id, seg.start), wasSaved = savedKeys.has(key)
+    sync.setPhrase(key, { ...phraseRecord(seg), value: !wasSaved })
     showToast(wasSaved ? '已从句子本移除' : '已收藏到句子本')
   }
 
   function togglePhraseFromBook(phrase: Phrase) {
-    persistPhrases(savedKeys.has(phrase.key)
-      ? phrases.filter(p => p.key !== phrase.key)
-      : [...phrases, phrase].sort((a, b) => b.savedAt - a.savedAt))
+    sync.setPhrase(phrase.key, { value: !savedKeys.has(phrase.key), start: phrase.start, end: phrase.end, text: phrase.text, zh: phrase.zh })
   }
 
   /** Plays just one saved sentence, then stops. */
@@ -794,7 +785,7 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
             ))}
           </div>
           <h3 className="font-semibold">云同步</h3>
-          <p className="text-[13px] mt-1" style={{ color: 'var(--text-2)' }}>在每台设备输入同一个口令，收藏和收听进度就会自动同步。只需输入一次，之后会记住。</p>
+          <p className="text-[13px] mt-1" style={{ color: 'var(--text-2)' }}>在每台设备输入同一个口令，收藏、收听进度和句子本就会自动同步。只需输入一次，之后会记住。</p>
           <label htmlFor="sync-secret" className="block text-[13px] mt-3" style={{ color: 'var(--text-2)' }}>同步口令</label>
           <input id="sync-secret" type="password" autoComplete="current-password" spellCheck={false} value={secretInput} onChange={e => setSecretInput(e.target.value)}
             placeholder="至少 4 位" onKeyDown={e => { if (e.key === 'Enter') sync.configureSecret(secretInput) }}

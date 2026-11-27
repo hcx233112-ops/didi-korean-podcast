@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server'
 import { validateSyncData } from '../../../lib/sync-data'
 
 export const runtime = 'nodejs'
-const MAX_BYTES = 128 * 1024
+const MAX_BYTES = 512 * 1024
 const MIN_SECRET = 4
 // A short passcode is safe only because wrong guesses are throttled globally (single-user site).
 const FAILURE_KEY = 'podcast-sync:failures'
@@ -15,7 +15,8 @@ class SyncCapacityError extends Error {}
 // The read/merge/write runs atomically in Redis, across concurrent devices.
 const MERGE_SCRIPT = `
 local old = redis.call('GET', KEYS[1])
-local state = old and cjson.decode(old) or {version=2, favorites={}, progress={}}
+local state = old and cjson.decode(old) or {version=2, favorites={}, progress={}, phrases={}}
+state.phrases = state.phrases or {}
 local incoming = cjson.decode(ARGV[1])
 for id, item in pairs(incoming.favorites) do
   local prev = state.favorites[id]
@@ -25,15 +26,20 @@ for id, item in pairs(incoming.progress) do
   local prev = state.progress[id]
   if not prev or item.updatedAt > prev.updatedAt or (item.updatedAt == prev.updatedAt and (item.deleted or (not prev.deleted and (item.pos < prev.pos or (item.pos == prev.pos and item.dur < prev.dur))))) then state.progress[id] = item end
 end
+for id, item in pairs(incoming.phrases or {}) do
+  local prev = state.phrases[id]
+  if not prev or item.updatedAt > prev.updatedAt or (item.updatedAt == prev.updatedAt and not item.value) then state.phrases[id] = item end
+end
 local encoded = cjson.encode(state)
 encoded = string.gsub(encoded, '"favorites":%[%]', '"favorites":{}')
 encoded = string.gsub(encoded, '"progress":%[%]', '"progress":{}')
-for _, kind in ipairs({'favorites', 'progress'}) do
+encoded = string.gsub(encoded, '"phrases":%[%]', '"phrases":{}')
+for _, kind in ipairs({'favorites', 'progress', 'phrases'}) do
   local count = 0
   for _ in pairs(state[kind]) do count = count + 1 end
   if count > 2000 then return redis.error_reply('SYNC_CAPACITY records') end
 end
-if string.len(encoded) > 131072 then return redis.error_reply('SYNC_CAPACITY bytes') end
+if string.len(encoded) > 524288 then return redis.error_reply('SYNC_CAPACITY bytes') end
 redis.call('SET', KEYS[1], encoded)
 return encoded
 `

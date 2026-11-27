@@ -58,18 +58,17 @@ test('lookup words drop punctuation and duplicates', () => {
   assert.match(drill.dictionaryUrl('apple', 'en'), /youdao/)
 })
 
-test('saved sentences toggle by episode and start, newest first', () => {
-  const memory = {}
-  const storage = { getItem: key => memory[key] ?? null }
-  let list = phrases.togglePhrase([], 'abcdefghijk', { start: 1.5, end: 3, ko: '안녕', zh: '你好' }, 10)
-  list = phrases.togglePhrase(list, 'abcdefghijk', { start: 5, end: 6, ko: 'Hi', zh: 'Hi' }, 20)
-  assert.deepEqual(list.map(p => p.text), ['Hi', '안녕'])
-  assert.equal(list[0].zh, '')
-  memory[phrases.PHRASES_KEY] = JSON.stringify([...list, list[1], { videoId: 'bad', start: 1, end: 2, text: 'x', zh: '', savedAt: 1 }])
-  assert.deepEqual(phrases.readPhrases(storage).map(p => p.key), ['abcdefghijk@500', 'abcdefghijk@150'])
-  assert.deepEqual(phrases.togglePhrase(list, 'abcdefghijk', { start: 1.5, end: 3, ko: '안녕', zh: '你好' }).map(p => p.text), ['Hi'])
-  memory[phrases.PHRASES_KEY] = '{broken'
-  assert.deepEqual(phrases.readPhrases(storage), [])
+test('saved sentences list newest first and keep no duplicate translation', () => {
+  const a = phrases.phraseRecord({ start: 1.5, end: 3, ko: ' 안녕 ', zh: '你好' })
+  const b = phrases.phraseRecord({ start: 5, end: 4, ko: 'Hi', zh: 'Hi' })
+  assert.deepEqual(a, { value: true, start: 1.5, end: 3, text: '안녕', zh: '你好' })
+  assert.deepEqual([b.end, b.zh], [5, ''])
+  const list = phrases.phraseList({
+    [phrases.phraseKey('abcdefghijk', 1.5)]: { ...a, updatedAt: 10 },
+    [phrases.phraseKey('abcdefghijk', 5)]: { ...b, updatedAt: 20 },
+    'abcdefghijk@700': { value: false, start: 7, end: 8, text: '', zh: '', updatedAt: 30 },
+  })
+  assert.deepEqual(list.map(p => [p.key, p.videoId, p.savedAt]), [['abcdefghijk@500', 'abcdefghijk', 20], ['abcdefghijk@150', 'abcdefghijk', 10]])
 })
 
 test('the week runs Monday to Sunday and counts only real listening days', () => {

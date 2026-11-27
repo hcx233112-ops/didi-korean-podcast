@@ -66,7 +66,7 @@ test('API accepts only bounded bodies and returns merged cloud state', async () 
     const response = await POST(new Request('http://localhost/api/sync', { method: 'POST', headers, body: JSON.stringify(data) }))
     assert.equal(response.status, 200)
     assert.deepEqual((await response.json()).data, data)
-    const tooLarge = await POST(new Request('http://localhost/api/sync', { method: 'POST', headers, body: ' '.repeat(131073) }))
+    const tooLarge = await POST(new Request('http://localhost/api/sync', { method: 'POST', headers, body: ' '.repeat(512 * 1024 + 1) }))
     assert.equal(tooLarge.status, 413)
   } finally { global.fetch = originalFetch }
 })
@@ -107,4 +107,29 @@ test('a short passcode is protected by a global lockout on repeated wrong guesse
     failures = 0
     assert.equal((await get('2580')).status, 200)
   } finally { global.fetch = originalFetch }
+})
+
+test('saved sentences sync like favorites: newest wins and a removal beats an older save', () => {
+  const key = `${id}@1050`
+  const saved = { value: true, start: 10.5, end: 12, text: '안녕하세요', zh: '你好', updatedAt: 10 }
+  const removed = { value: false, start: 10.5, end: 12, text: '', zh: '', updatedAt: 20 }
+  const older = { ...emptySyncData(), phrases: { [key]: saved } }
+  const newer = { ...emptySyncData(), phrases: { [key]: removed } }
+  assert.deepEqual(mergeSyncData(older, newer).phrases[key], removed)
+  assert.deepEqual(mergeSyncData(newer, older).phrases[key], removed)
+  const tie = { ...emptySyncData(), phrases: { [key]: { ...removed, updatedAt: 10 } } }
+  assert.equal(mergeSyncData(older, tie).phrases[key].value, false)
+  assert.deepEqual(validateSyncData(older), older)
+})
+
+test('data from clients without sentences stays valid, and malformed sentences are rejected', () => {
+  const legacy = { version: 2, favorites: {}, progress: {} }
+  assert.deepEqual(validateSyncData(legacy), emptySyncData())
+  assert.deepEqual(mergeSyncData(emptySyncData(), legacy).phrases, {})
+  const good = { value: true, start: 1, end: 2, text: 'x', zh: '', updatedAt: 10 }
+  for (const [key, item] of [
+    ['bad', good], [`${id}@1`, { ...good, value: 'yes' }], [`${id}@1`, { ...good, end: 0.5 }], [`${id}@1`, { ...good, text: '' }],
+    [`${id}@1`, { ...good, text: 'x'.repeat(601) }], [`${id}@1`, { ...good, start: NaN }],
+  ]) assert.throws(() => validateSyncData({ ...emptySyncData(), phrases: { [key]: item } }), undefined, key)
+  assert.throws(() => validateSyncData({ ...emptySyncData(), phrases: [] }))
 })

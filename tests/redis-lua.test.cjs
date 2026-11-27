@@ -82,7 +82,41 @@ test('actual Lua preserves newer deletions and rejects oversized merged states b
     destination.progress[String(i).padStart(11, '0')] = { pos: 100, dur: 2000, updatedAt: 1_000_000_000_000 + i }
     destination.favorites[String(i).padStart(11, '0')] = { value: true, updatedAt: 1_000_000_000_000 + i }
   }
+  for (let i = 0; i < 400; i++) {
+    const destination = i < 200 ? largeOld : largeAdded
+    destination.phrases[`abcdefghijk@${i}`] = { value: true, start: i, end: i + 1, text: '가'.repeat(600), zh: '', updatedAt: 1_000_000_000_000 + i }
+  }
   const bytesFull = execute(script, largeOld, largeAdded)
   assert.deepEqual(bytesFull.saved, largeOld)
   assert.match(bytesFull.result.error, /SYNC_CAPACITY/)
+})
+
+test('actual Lua merges sentences, keeps them when an older client omits them, and keeps empty maps as objects', async () => {
+  process.env.PODCAST_SYNC_SECRET = 'a'.repeat(32)
+  process.env.KV_REST_API_URL = 'https://mock.invalid'
+  process.env.KV_REST_API_TOKEN = 'mock'
+  const { POST } = require('../app/api/sync/route.ts')
+  const originalFetch = global.fetch
+  let script
+  global.fetch = async (_url, options) => { script = JSON.parse(options.body)[1]; return Response.json({ result: JSON.stringify(emptySyncData()) }) }
+  try {
+    await POST(new Request('http://localhost/api/sync', { method: 'POST', headers: { authorization: `Bearer ${'a'.repeat(32)}` }, body: JSON.stringify(emptySyncData()) }))
+  } finally { global.fetch = originalFetch }
+  const key = 'abcdefghijk@1050'
+  const stored = emptySyncData()
+  stored.phrases[key] = { value: true, start: 10.5, end: 12, text: '안녕', zh: '你好', updatedAt: 10 }
+  // A client from before sentences existed sends no phrases at all.
+  const legacy = { version: 2, favorites: { abcdefghijk: { value: true, updatedAt: 5 } }, progress: {} }
+  const merged = execute(script, stored, legacy).saved
+  assert.deepEqual(merged.phrases, stored.phrases)
+  assert.equal(merged.favorites.abcdefghijk.value, true)
+  const removal = emptySyncData()
+  removal.phrases[key] = { value: false, start: 10.5, end: 12, text: '', zh: '', updatedAt: 20 }
+  assert.deepEqual(execute(script, stored, removal).saved.phrases[key], removal.phrases[key])
+  const staleSave = emptySyncData()
+  staleSave.phrases[key] = { ...stored.phrases[key], updatedAt: 15 }
+  assert.deepEqual(execute(script, removal, staleSave).saved.phrases[key], removal.phrases[key])
+  // A state saved before sentences existed gains an empty object, not a Lua array.
+  const old = { version: 2, favorites: {}, progress: {} }
+  assert.deepEqual(execute(script, old, emptySyncData()).saved, emptySyncData())
 })
