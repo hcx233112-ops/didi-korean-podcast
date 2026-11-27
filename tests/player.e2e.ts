@@ -198,3 +198,23 @@ test('the week strip counts listening days, and keyboard shortcuts drive playbac
   await page.keyboard.press('ArrowRight')
   expect(await page.locator('audio').evaluate((audio: HTMLAudioElement) => audio.currentTime)).toBe(5)
 })
+
+test('in the background a drill never leaves playback paused', async ({ page }) => {
+  await openTranscript(page)
+  await page.getByRole('button', { name: /^跟读练习/ }).click()
+  await page.getByRole('button', { name: /^单句循环/ }).click()
+  await page.evaluate(() => Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' }))
+  await setTime(page, 8.96)
+  await page.locator('audio').evaluate(audio => audio.dispatchEvent(new Event('timeupdate')))
+  expect(await audioLog(page)).toEqual(['seeked@8.96', 'seeked@5'])
+  await page.getByRole('button', { name: /^跟读练习/ }).click()
+  await page.getByRole('button', { name: /^逐句跟读/ }).click()
+  await page.evaluate(() => Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' }))
+  await setTime(page, 13.96)
+  await expect(page.locator('#seg-2')).toContainText('该你说了')
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' })
+    document.dispatchEvent(new Event('visibilitychange'))
+  })
+  expect((await audioLog(page)).slice(-3)).toEqual(['seeked@13.96', 'pause@13.96', 'play@13.96'])
+})

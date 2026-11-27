@@ -175,7 +175,7 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
 
   useEffect(() => {
     const onVisibility = () => {
-      if (document.visibilityState === 'hidden') { persistCurrent(true); flushListening(); void syncNow(true) }
+      if (document.visibilityState === 'hidden') { finishWaitRef.current(); persistCurrent(true); flushListening(); void syncNow(true) }
       else { void syncNow(false, true); checkTimer() }
     }
     const onPageHide = () => { persistCurrent(true); flushListening(); void syncNow(true) }
@@ -299,12 +299,18 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
     const step = drillStep(mode, segs.list, drillIdxRef.current, t, gapScaleRef.current)
     if (step.kind === 'anchor') drillIdxRef.current = drillAnchor(segs.list, t)
     else if (step.kind === 'pause') {
+      // A paused page in the background (locked iPhone) may never be woken to resume, so keep the sound going there.
+      if (document.visibilityState === 'hidden') {
+        drillIdxRef.current = step.next
+        if (step.resumeAt !== null) a.currentTime = step.resumeAt
+        return
+      }
       // A drill pause is not a stop: it must not trigger a cloud sync for every sentence.
       drillPauseRef.current = true
       requester.cancel()
       a.pause()
       waitRef.current = { timer: setTimeout(() => finishWaitRef.current(), step.waitMs), resumeAt: step.resumeAt, next: step.next }
-      setDrillWait({ idx: drillIdxRef.current, ms: step.waitMs, key: Date.now() })
+      if (mode === 'shadow') setDrillWait({ idx: drillIdxRef.current, ms: step.waitMs, key: Date.now() })
     }
   }
   const checkDrillRef = useRef(checkDrill)
