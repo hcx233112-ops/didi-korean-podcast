@@ -80,7 +80,7 @@ function ContinueCard({ video, detail, resume, isCurrent, playing, onPlay }: {
       <button aria-label={label} onClick={() => onPlay(video)}
         className="tap relative w-full overflow-hidden rounded-[26px] text-left p-4 flex gap-4 items-center"
         style={{ background: 'var(--surface)', border: '1px solid var(--line)' }}>
-        <img data-cover-blur src={video.thumbnail} alt="" aria-hidden className="absolute inset-0 w-full h-full object-cover scale-125 blur-2xl opacity-35" />
+        <img src={video.thumbnail} alt="" aria-hidden className="absolute inset-0 w-full h-full object-cover scale-125 blur-2xl opacity-35" />
         <div className="absolute inset-0" style={{ background: 'linear-gradient(120deg, rgba(11,11,16,.35), rgba(11,11,16,.85))' }} />
         <Cover src={video.thumbnail} size={96} radius={18} className="relative shadow-lg" />
         <div className="relative flex-1 min-w-0">
@@ -129,7 +129,7 @@ const VideoRow = memo(function VideoRow({ video, channelLabel, isCurrent, playin
   const p = progressOf(detail)
   const done = p >= DONE_THRESHOLD
   return (
-    <div className="relative">
+    <div data-video-row className="relative">
       <div role="button" tabIndex={0} aria-label={`播放 ${video.title}`}
         onKeyDown={e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onPlay(video) } }}
         onClick={() => onPlay(video)}
@@ -306,7 +306,7 @@ export const HomeView = memo(function HomeView(props: Props) {
       )}
 
       <section className="mt-9">
-        <div className="sticky z-10 bar" style={{ top: 'env(safe-area-inset-top)', borderBottom: '1px solid var(--line)' }}>
+        <div data-library-bar className="sticky z-10 bar" style={{ top: 'env(safe-area-inset-top)', borderBottom: '1px solid var(--line)' }}>
           <div className="flex items-center justify-between px-5 pt-3">
             <h2 className="text-[19px] font-bold tracking-tight">全部节目 <span className="text-[13px] font-medium" style={{ color: 'var(--text-3)' }}>{videos.length}</span></h2>
             <button aria-label={searching ? '收起搜索' : '搜索节目'} aria-pressed={searching}

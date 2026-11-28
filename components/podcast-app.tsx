@@ -725,7 +725,7 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
   const progress = duration > 0 ? elapsed / duration : 0
 
   return (
-    <div className="h-dvh overflow-y-auto overflow-x-hidden" style={{ background: 'var(--bg)' }}>
+    <div data-app-scroll className="h-dvh overflow-y-auto overflow-x-hidden" style={{ background: 'var(--bg)' }}>
       <audio data-player playsInline preload="auto" style={{ position: 'absolute', width: 0, height: 0, opacity: 0, pointerEvents: 'none' }} />
       <div className="fixed top-0 inset-x-0 z-20 bar" style={{ height: 'env(safe-area-inset-top)' }} />
       {probe && <PerfProbe />}
