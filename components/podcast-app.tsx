@@ -542,6 +542,14 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
     playerTimer.current = setTimeout(() => { playerTimer.current = null; setPlayer(null); setClosingPlayer(false) }, 360)
   }
   useEffect(() => { sheetRef.current = sheet }, [sheet])
+  // The library must not scroll along underneath the player or a sheet.
+  const covered = player !== null || sheet !== null
+  useEffect(() => {
+    if (!covered) return
+    const root = document.documentElement
+    root.style.overflow = 'hidden'
+    return () => { root.style.overflow = '' }
+  }, [covered])
   useEffect(() => { playerOpenRef.current = player !== null && !closingPlayer }, [player, closingPlayer])
 
   // The subtitle highlight follows playback four times a second while the full player is open.
@@ -725,7 +733,8 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
   const progress = duration > 0 ? elapsed / duration : 0
 
   return (
-    <div data-app-scroll className="h-dvh overflow-y-auto overflow-x-hidden" style={{ background: 'var(--bg)' }}>
+    // The page itself scrolls: iPhone Safari drops to ~20 fps scrolling a full-screen inner box, but keeps 60 on the page.
+    <div className="min-h-dvh overflow-x-clip" style={{ background: 'var(--bg)' }}>
       <audio data-player playsInline preload="auto" style={{ position: 'absolute', width: 0, height: 0, opacity: 0, pointerEvents: 'none' }} />
       <div className="fixed top-0 inset-x-0 z-20 bar" style={{ height: 'env(safe-area-inset-top)' }} />
       {probe && <PerfProbe />}

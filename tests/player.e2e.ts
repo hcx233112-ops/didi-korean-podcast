@@ -401,17 +401,26 @@ test('only the mini player is frosted over the scrolling library', async ({ page
   expect(frosted).toBe(1)
 })
 
-test('the ?perf probe shows the frame rate and switches suspected costs off', async ({ page }) => {
+test('the library scrolls as the page itself, held still under the player', async ({ page }) => {
+  await page.goto('/')
+  // iPhone Safari scrolls the page at 60 fps but a full-screen inner scroll box at about 20.
+  await page.mouse.move(200, 600)
+  await page.mouse.wheel(0, 1500)
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0)
+  await page.getByRole('button', { name: '播放 First episode', exact: true }).click()
+  await page.getByRole('button', { name: '打开播放器' }).click()
+  await expect(page.getByRole('dialog', { name: '正在播放' })).toBeVisible()
+  expect(await page.evaluate(() => getComputedStyle(document.documentElement).overflow)).toBe('hidden')
+  await page.getByRole('button', { name: '收起播放器' }).click()
+  await expect(page.getByRole('dialog', { name: '正在播放' })).toHaveCount(0)
+  expect(await page.evaluate(() => getComputedStyle(document.documentElement).overflow)).toBe('visible')
+})
+
+test('the ?perf probe shows still and scrolling frame rates and render time', async ({ page }) => {
   await page.goto('/?perf')
   const probe = page.getByRole('region', { name: '性能检测' })
   await expect(probe).toContainText(/静止 \d+ · 滑动 \d+ fps/)
   await expect(probe).toContainText(/渲染 \d+\/\d+ ms/)
-  await probe.getByRole('button', { name: '整页滚动' }).click()
-  await expect(probe.getByRole('button', { name: '整页滚动' })).toHaveAttribute('aria-pressed', 'true')
-  expect(await page.evaluate(() => document.documentElement.classList.contains('perf-docscroll'))).toBe(true)
-  // The whole page now scrolls instead of the app's own scroll box.
-  await page.mouse.wheel(0, 2000)
-  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0)
   await page.goto('/')
   await expect(page.getByRole('region', { name: '性能检测' })).toHaveCount(0)
 })
