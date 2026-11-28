@@ -129,7 +129,7 @@ const VideoRow = memo(function VideoRow({ video, channelLabel, isCurrent, playin
   const p = progressOf(detail)
   const done = p >= DONE_THRESHOLD
   return (
-    <div data-video-row className="relative">
+    <div className="relative">
       <div role="button" tabIndex={0} aria-label={`播放 ${video.title}`}
         onKeyDown={e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onPlay(video) } }}
         onClick={() => onPlay(video)}
@@ -306,7 +306,7 @@ export const HomeView = memo(function HomeView(props: Props) {
       )}
 
       <section className="mt-9">
-        <div data-library-bar className="sticky z-10 bar" style={{ top: 'env(safe-area-inset-top)', borderBottom: '1px solid var(--line)' }}>
+        <div className="sticky z-10 bar" style={{ top: 'env(safe-area-inset-top)', borderBottom: '1px solid var(--line)' }}>
           <div className="flex items-center justify-between px-5 pt-3">
             <h2 className="text-[19px] font-bold tracking-tight">全部节目 <span className="text-[13px] font-medium" style={{ color: 'var(--text-3)' }}>{videos.length}</span></h2>
             <button aria-label={searching ? '收起搜索' : '搜索节目'} aria-pressed={searching}

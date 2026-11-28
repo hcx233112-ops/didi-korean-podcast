@@ -39,11 +39,6 @@ body {
 /* Bars that stay put over the scrolling library are solid: iOS re-blurs a frosted layer on every scrolled frame. */
 .bar { background: rgba(11, 11, 16, 0.96); }
 
-/* ?perf switches, each changing one suspect on the phone. */
-.perf-docscroll [data-app-scroll] { height: auto !important; overflow: visible !important; }
-.perf-nosticky [data-library-bar] { position: relative !important; top: auto !important; }
-.perf-noimg img { visibility: hidden; }
-.perf-nosvg svg { display: none; }
 
 .skeleton {
   background: linear-gradient(90deg, var(--surface) 0%, var(--surface-2) 50%, var(--surface) 100%);
