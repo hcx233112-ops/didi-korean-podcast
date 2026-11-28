@@ -414,6 +414,21 @@ test('the library scrolls as the page itself, held still under the player', asyn
   await page.getByRole('button', { name: '收起播放器' }).click()
   await expect(page.getByRole('dialog', { name: '正在播放' })).toHaveCount(0)
   expect(await page.evaluate(() => getComputedStyle(document.documentElement).overflow)).toBe('visible')
+  // A pull past the top must not reload the page (and stop playback).
+  expect(await page.evaluate(() => getComputedStyle(document.documentElement).overscrollBehaviorY)).toBe('none')
+})
+
+test('typing never zooms the page on iPhone', async ({ page }) => {
+  await page.goto('/')
+  await page.getByRole('button', { name: '搜索节目' }).click()
+  await page.getByRole('button', { name: '播放 First episode', exact: true }).click()
+  await page.getByRole('button', { name: '打开播放器' }).click()
+  await page.getByRole('button', { name: '编辑当前节目备注' }).click()
+  // iOS zooms into any text field under 16px when it is focused, and stays zoomed.
+  const small = await page.evaluate(() => [...document.querySelectorAll('input:not([type=range]), textarea')]
+    .map(el => [el.getAttribute('aria-label') || el.id, parseFloat(getComputedStyle(el).fontSize)] as const).filter(([, size]) => size < 16))
+  expect(small).toEqual([])
+  expect(await page.locator('input:not([type=range]), textarea').count()).toBe(2)
 })
 
 test('the ?perf probe shows still and scrolling frame rates and render time', async ({ page }) => {
