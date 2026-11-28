@@ -45,6 +45,28 @@ export const ShuffleIcon = ({ size = 14 }: P) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden><path d="M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5" /></svg>
 )
 
+export const RepeatIcon = ({ size = 18 }: P) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <path d="M17 2l4 4-4 4" /><path d="M3 11v-1a4 4 0 0 1 4-4h14" /><path d="M7 22l-4-4 4-4" /><path d="M21 13v1a4 4 0 0 1-4 4H3" />
+  </svg>
+)
+export const ReplayIcon = ({ size = 26 }: P) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <path d="M4 12a8 8 0 1 0 2.4-5.7" /><path d="M4 4v4h4" />
+    <text x="12.4" y="15.3" fontSize="7.5" fontWeight="700" textAnchor="middle" fill="currentColor" stroke="none">句</text>
+  </svg>
+)
+export const BookmarkIcon = ({ size = 18, filled }: P & { filled?: boolean }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill={filled ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinejoin="round" aria-hidden>
+    <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
+  </svg>
+)
+export const CopyIcon = ({ size = 18 }: P) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1" />
+  </svg>
+)
+
 /** Circular progress around a cover or dot; 0..1. */
 export function ProgressRing({ value, size = 22, stroke = 2.5, done }: { value: number; size?: number; stroke?: number; done?: boolean }) {
   const r = (size - stroke) / 2, c = 2 * Math.PI * r

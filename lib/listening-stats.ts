@@ -37,6 +37,19 @@ export function streak(stats: ListeningStats, today: Date) {
   return count
 }
 
+export const WEEK_GOAL_DAYS = 4
+const WEEKDAY_LABELS = ['一', '二', '三', '四', '五', '六', '日']
+
+/** Monday-to-Sunday of the current week, marking the days that count as listened. */
+export function weekDays(stats: ListeningStats, today: Date) {
+  const todayIndex = (today.getDay() + 6) % 7
+  const monday = shift(today, -todayIndex)
+  return WEEKDAY_LABELS.map((label, i) => {
+    const key = dayKey(shift(monday, i))
+    return { key, label, listened: (stats.days[key] || 0) >= STREAK_MIN_SECONDS, today: i === todayIndex, future: i > todayIndex }
+  })
+}
+
 export function readStats(storage: Pick<Storage, 'getItem'>): ListeningStats {
   try {
     const value = JSON.parse(storage.getItem(STATS_KEY) || 'null')

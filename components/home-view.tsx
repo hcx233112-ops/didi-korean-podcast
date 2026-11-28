@@ -5,7 +5,8 @@ import {
   DONE_THRESHOLD, type ProgressDetail, type Video, dailyPick, dayKey, formatDuration, formatTime, greeting,
   groupByMonth, inProgress, newEpisodes, pickContinue, progressOf,
 } from '@/lib/library'
-import { CheckIcon, HeartIcon, PauseIcon, PlayIcon, ProgressRing, SearchIcon, ShuffleIcon } from './icons'
+import type { Phrase } from '@/lib/phrases'
+import { BookmarkIcon, CheckIcon, HeartIcon, PauseIcon, PlayIcon, ProgressRing, SearchIcon, ShuffleIcon } from './icons'
 
 export interface Channel { id: string; name: string; description: string; initial: string; color: string; avatar?: string; lang?: string }
 type Filter = 'all' | 'unplayed' | 'fav' | 'done'
@@ -21,7 +22,10 @@ interface Props {
   notes: Record<string, string>
   currentId: string | null
   playing: boolean
-  stats: { week: number; streak: number; finished: number }
+  stats: { week: number; streak: number; finished: number; days: { key: string; label: string; listened: boolean; today: boolean; future: boolean }[]; goal: number }
+  phraseCount: number
+  phraseOfDay: Phrase | null
+  onOpenPhrases: () => void
   channels: Channel[]
   listError: string | null
   onRetryList: () => void
@@ -95,6 +99,25 @@ function ContinueCard({ video, detail, resume, isCurrent, playing, onPlay }: {
   )
 }
 
+function WeekStrip({ days, goal }: { days: Props['stats']['days']; goal: number }) {
+  const count = days.filter(d => d.listened).length
+  const met = count >= goal
+  return (
+    <div className="flex items-center gap-1 mt-2.5" role="img" aria-label={`本周已有 ${count} 天在听，目标 ${goal} 天`}>
+      {days.map(d => (
+        <span key={d.key} className="w-[22px] h-[22px] rounded-full flex items-center justify-center text-[10px] font-semibold"
+          style={{
+            background: d.listened ? 'var(--accent)' : 'transparent', color: d.listened ? '#000' : 'var(--text-3)',
+            border: d.listened ? 'none' : `1px solid ${d.today ? 'var(--accent)' : 'var(--line)'}`, opacity: d.future ? 0.45 : 1,
+          }}>{d.label}</span>
+      ))}
+      <span className="text-[12px] ml-1.5 font-semibold" style={{ color: met ? 'var(--accent)' : 'var(--text-2)' }}>
+        {met ? '本周目标达成' : `本周 ${count}/${goal} 天`}
+      </span>
+    </div>
+  )
+}
+
 function ContinueSkeleton() {
   return <div className="px-5"><div className="skeleton rounded-[26px]" style={{ height: 128 }} /></div>
 }
@@ -110,8 +133,7 @@ const VideoRow = memo(function VideoRow({ video, channelLabel, isCurrent, playin
       <div role="button" tabIndex={0} aria-label={`播放 ${video.title}`}
         onKeyDown={e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onPlay(video) } }}
         onClick={() => onPlay(video)}
-        className="flex items-center gap-3.5 pl-5 pr-24 py-3 cursor-pointer active:bg-white/5 transition-colors"
-        style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 78px' }}>
+        className="flex items-center gap-3.5 pl-5 pr-24 py-3 cursor-pointer active:bg-white/5 transition-colors">
         <Cover src={video.thumbnail} size={54} radius={12} />
         <div className="flex-1 min-w-0">
           <p className="text-[15px] leading-snug line-clamp-2" style={{ color: isCurrent ? 'var(--accent)' : done ? 'var(--text-2)' : 'var(--text)', fontWeight: isCurrent ? 600 : 500 }}>
@@ -143,7 +165,8 @@ const VideoRow = memo(function VideoRow({ video, channelLabel, isCurrent, playin
   )
 })
 
-export function HomeView(props: Props) {
+// Memoized: the player ticks up to four times a second and the library need not re-render with it.
+export const HomeView = memo(function HomeView(props: Props) {
   const { hydrated, videos, details, favorites, notes, currentId, playing, stats, channels, onPlay } = props
   const [channelFilter, setChannelFilter] = useState<string | null>(null)
   const shortName = (id?: string) => channels.length > 1 ? channels.find(c => c.id === id)?.name.split(/[의']/)[0].trim() : undefined
@@ -190,6 +213,7 @@ export function HomeView(props: Props) {
           <p className="text-[13px] mt-0.5 tabular-nums" style={{ color: 'var(--text-2)' }}>
             {stats.streak > 1 && hydrated ? <span aria-hidden>🔥 </span> : null}{subtitle}
           </p>
+          {hydrated ? <WeekStrip days={stats.days} goal={stats.goal} /> : <div className="h-[22px] mt-2.5" />}
         </div>
         <button aria-label="设置与云同步" onClick={props.onOpenSettings} className="tap flex flex-shrink-0 items-center">
           {channels.map((c, i) => (
@@ -267,11 +291,27 @@ export function HomeView(props: Props) {
         </section>
       )}
 
+      {props.phraseOfDay && (
+        <section className="mt-8 px-5 rise" style={{ animationDelay: '180ms' }}>
+          <button aria-label={`打开句子本，共 ${props.phraseCount} 句`} onClick={props.onOpenPhrases}
+            className="tap w-full text-left rounded-[22px] p-4" style={{ background: 'var(--surface)', border: '1px solid var(--line)' }}>
+            <div className="flex items-center justify-between">
+              <p className="text-[12px] font-semibold flex items-center gap-1" style={{ color: 'var(--accent)' }}><BookmarkIcon size={12} filled /> 句子本 · 今日复习</p>
+              <span className="text-[12px]" style={{ color: 'var(--text-3)' }}>{props.phraseCount} 句 ›</span>
+            </div>
+            <p className="text-[16px] font-semibold leading-snug line-clamp-2 mt-2">{props.phraseOfDay.text}</p>
+            {props.phraseOfDay.zh && <p className="text-[13px] mt-1 line-clamp-1" style={{ color: 'var(--text-3)' }}>{props.phraseOfDay.zh}</p>}
+          </button>
+        </section>
+      )}
+
       <section className="mt-9">
         <div className="sticky z-10 glass" style={{ top: 'env(safe-area-inset-top)', borderBottom: '1px solid var(--line)' }}>
           <div className="flex items-center justify-between px-5 pt-3">
             <h2 className="text-[19px] font-bold tracking-tight">全部节目 <span className="text-[13px] font-medium" style={{ color: 'var(--text-3)' }}>{videos.length}</span></h2>
-            <button aria-label="搜索节目" onClick={() => setSearching(s => !s)} className="tap w-9 h-9 rounded-full flex items-center justify-center" style={{ background: 'var(--surface-2)', color: 'var(--text-2)' }}>
+            <button aria-label={searching ? '收起搜索' : '搜索节目'} aria-pressed={searching}
+              // A hidden search box must not keep filtering the list.
+              onClick={() => { if (searching) setQuery(''); setSearching(s => !s) }} className="tap w-9 h-9 rounded-full flex items-center justify-center" style={{ background: 'var(--surface-2)', color: 'var(--text-2)' }}>
               <SearchIcon />
             </button>
           </div>
@@ -327,4 +367,4 @@ export function HomeView(props: Props) {
       </section>
     </div>
   )
-}
+})

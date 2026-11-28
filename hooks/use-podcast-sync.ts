@@ -1,13 +1,15 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { type SyncData, emptySyncData, mergeSyncData, validateSyncData } from '@/lib/sync-data'
+import { phraseList } from '@/lib/phrases'
+import { MAX_RECORDS, type PhraseRecord, type SyncData, emptySyncData, mergeSyncData, validateSyncData } from '@/lib/sync-data'
 
 const DATA_KEY = 'podcast-sync-v2'
 const SECRET_KEY = 'podcast-sync-secret'
 
+const sorted = <T,>(map: Record<string, T>) => Object.fromEntries(Object.entries(map).sort(([a], [b]) => a.localeCompare(b)))
 function serialize(data: SyncData) {
-  return JSON.stringify({ version: 2, favorites: Object.fromEntries(Object.entries(data.favorites).sort(([a], [b]) => a.localeCompare(b))), progress: Object.fromEntries(Object.entries(data.progress).sort(([a], [b]) => a.localeCompare(b))) })
+  return JSON.stringify({ version: 2, favorites: sorted(data.favorites), progress: sorted(data.progress), phrases: sorted(data.phrases) })
 }
 
 export function readLocalSync(storage: Pick<Storage, 'getItem' | 'key' | 'length'>): SyncData {
@@ -31,7 +33,7 @@ export function readLocalSync(storage: Pick<Storage, 'getItem' | 'key' | 'length
     }
     try {
       const stored = JSON.parse(storage.getItem(DATA_KEY) || 'null')
-      return stored?.version === 2 ? mergeSyncData(data, validateSyncData(stored)) : data
+      return stored?.version === 2 ? mergeSyncData(data, validateSyncData(stored, Date.now(), { limits: false })) : data
     } catch { return data }
   } catch { return data }
 }
@@ -49,7 +51,7 @@ function writeLocalSync(data: SyncData) {
 export function usePodcastSync() {
   const [data, setData] = useState<SyncData>(emptySyncData)
   const [secret, setSecret] = useState('')
-  const [status, setStatus] = useState('本地模式：收藏和进度保存在此设备')
+  const [status, setStatus] = useState('本地模式：收藏、进度和句子本保存在此设备')
   const dataRef = useRef(data)
   const secretRef = useRef('')
   const dirtyRef = useRef(false)
@@ -90,11 +92,15 @@ export function usePodcastSync() {
       }
       if (generation !== generationRef.current) return
       const sent = dataRef.current
+      const body = JSON.stringify(sent)
+      // Browsers refuse keepalive bodies over 64 KB; a plain request still finishes while the page is hidden.
+      const small = new TextEncoder().encode(body).length < 60_000
+      keepaliveRef.current = keepalive && small
       const response = await fetch('/api/sync', {
-        method: 'POST', headers, body: JSON.stringify(sent), keepalive,
+        method: 'POST', headers, body, keepalive: keepalive && small,
         signal: controller.signal,
       })
-      if (!response.ok) throw new Error(response.status === 401 ? '同步口令不正确，请重新输入' : response.status === 429 ? '尝试次数过多，请 10 分钟后再试' : response.status === 503 ? '云同步服务尚未配置，数据仍保存在本地' : `保存失败（${response.status}），请重试`)
+      if (!response.ok) throw new Error(response.status === 401 ? '同步口令不正确，请重新输入' : response.status === 429 ? '尝试次数过多，请 10 分钟后再试' : response.status === 503 ? '云同步服务尚未配置，数据仍保存在本地' : response.status === 413 ? '云同步容量已满，数据仍保存在本地' : `保存失败（${response.status}），请重试`)
       const result = await response.json() as { ok: boolean; data: SyncData }
       if (!result.ok || !result.data) throw new Error('同步响应无效，请重试')
       if (generation !== generationRef.current) return
@@ -126,7 +132,7 @@ export function usePodcastSync() {
     const onStorage = (event: StorageEvent) => {
       if (event.key === DATA_KEY && event.newValue) {
         try {
-          const next = mergeSyncData(dataRef.current, validateSyncData(JSON.parse(event.newValue)))
+          const next = mergeSyncData(dataRef.current, validateSyncData(JSON.parse(event.newValue), Date.now(), { limits: false }))
           if (serialize(next) !== serialize(dataRef.current)) apply(next, true)
         } catch {}
       }
@@ -152,12 +158,19 @@ export function usePodcastSync() {
     secretRef.current = trimmed
     setSecret(trimmed)
     try { trimmed ? localStorage.setItem(SECRET_KEY, trimmed) : localStorage.removeItem(SECRET_KEY) } catch {}
-    if (!trimmed) setStatus('本地模式：收藏和进度保存在此设备')
+    if (!trimmed) setStatus('本地模式：收藏、进度和句子本保存在此设备')
     else { dirtyRef.current = true; void synchronize(false, true) }
     return true
   }, [synchronize])
 
-  const timestamp = () => Math.max(Date.now(), ...Object.values(dataRef.current.favorites).map(v => v.updatedAt + 1), ...Object.values(dataRef.current.progress).map(v => v.updatedAt + 1))
+  // Strictly after every known record, so a device with a slow clock still records the latest change as latest.
+  const timestamp = () => {
+    let latest = Date.now()
+    for (const kind of [dataRef.current.favorites, dataRef.current.progress, dataRef.current.phrases]) {
+      for (const item of Object.values(kind)) if (item.updatedAt >= latest) latest = item.updatedAt + 1
+    }
+    return latest
+  }
 
   const toggleFavorite = useCallback((id: string) => {
     const next = dataRef.current
@@ -178,6 +191,23 @@ export function usePodcastSync() {
     apply({ ...next, progress: { ...next.progress, [id]: { pos: 0, dur: next.progress[id]?.dur || 0, deleted: true, updatedAt: timestamp() } } }, true)
   }, [apply])
 
+  /** Saves (value) or removes a sentence; a removal keeps only a tombstone so older devices cannot revive it. */
+  /** False when the book is full: the cloud keeps at most MAX_RECORDS sentences, removed ones included. */
+  const setPhrase = useCallback((key: string, record: Omit<PhraseRecord, 'updatedAt'>) => {
+    const next = dataRef.current
+    const phrases = { ...next.phrases }
+    if (!(key in phrases) && Object.keys(phrases).length >= MAX_RECORDS) {
+      // Make room by forgetting the oldest removal; a book full of saved sentences takes no more.
+      const oldest = Object.entries(phrases).filter(([, p]) => !p.value).sort((a, b) => a[1].updatedAt - b[1].updatedAt)[0]
+      if (!oldest || !record.value) return false
+      delete phrases[oldest[0]]
+    }
+    const item = record.value ? record : { ...record, text: '', zh: '' }
+    apply({ ...next, phrases: { ...phrases, [key]: { ...item, updatedAt: timestamp() } } }, true)
+    return true
+  }, [apply])
+
+  const phrases = useMemo(() => phraseList(data.phrases), [data.phrases])
   const favorites = useMemo(() => new Set(Object.entries(data.favorites).filter(([, item]) => item.value).map(([id]) => id)), [data.favorites])
   // Unchanged records keep their identity, so memoized rows skip re-rendering on each save.
   const detailCache = useRef(new WeakMap<object, { pos: number; dur: number; updatedAt: number }>())
@@ -189,5 +219,5 @@ export function usePodcastSync() {
   const videoProgress = useMemo(() => Object.fromEntries(Object.entries(videoDetails).map(([id, item]) => [id, item.pos / item.dur])), [videoDetails])
   const getProgress = useCallback((id: string) => { const item = dataRef.current.progress[id]; return item && !item.deleted ? { pos: item.pos, dur: item.dur, updatedAt: item.updatedAt } : null }, [])
 
-  return { favorites, videoDetails, videoProgress, saveProgress, resetProgress, toggleFavorite, getProgress, secret, status, configureSecret, syncNow: synchronize }
+  return { phrases, setPhrase, favorites, videoDetails, videoProgress, saveProgress, resetProgress, toggleFavorite, getProgress, secret, status, configureSecret, syncNow: synchronize }
 }
