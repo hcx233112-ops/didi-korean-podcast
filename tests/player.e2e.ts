@@ -404,10 +404,14 @@ test('only the mini player is frosted over the scrolling library', async ({ page
 test('the ?perf probe shows the frame rate and switches suspected costs off', async ({ page }) => {
   await page.goto('/?perf')
   const probe = page.getByRole('region', { name: '性能检测' })
-  await expect(probe).toContainText(/\d+ fps/)
-  await probe.getByRole('button', { name: '关毛玻璃' }).click()
-  await expect(probe.getByRole('button', { name: '关毛玻璃' })).toHaveAttribute('aria-pressed', 'true')
-  expect(await page.evaluate(() => document.documentElement.classList.contains('perf-noglass'))).toBe(true)
+  await expect(probe).toContainText(/静止 \d+ · 滑动 \d+ fps/)
+  await expect(probe).toContainText(/渲染 \d+\/\d+ ms/)
+  await probe.getByRole('button', { name: '整页滚动' }).click()
+  await expect(probe.getByRole('button', { name: '整页滚动' })).toHaveAttribute('aria-pressed', 'true')
+  expect(await page.evaluate(() => document.documentElement.classList.contains('perf-docscroll'))).toBe(true)
+  // The whole page now scrolls instead of the app's own scroll box.
+  await page.mouse.wheel(0, 2000)
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0)
   await page.goto('/')
   await expect(page.getByRole('region', { name: '性能检测' })).toHaveCount(0)
 })
