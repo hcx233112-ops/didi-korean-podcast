@@ -11,6 +11,7 @@ import { type Phrase, phraseKey, phraseRecord } from '@/lib/phrases'
 import { createPlaybackRequester, createProgressSaver, createTranscriptLoader, remainingTimerSeconds } from '@/lib/player-runtime'
 import { type Channel, HomeView } from './home-view'
 import { FullPlayer, MiniPlayer, Sheet, TimerOptions, type TranscriptSegment } from './player-view'
+import { PerfProbe } from './perf-probe'
 import { DrillOptions, GAP_SCALES, PhraseBook, SegmentMenu } from './practice-view'
 
 const channels: Channel[] = channelsData
@@ -37,6 +38,8 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
   const [listError, setListError] = useState<string | null>(null)
   const [listRetry, setListRetry] = useState(0)
   const [hydrated, setHydrated] = useState(false)
+  const [probe, setProbe] = useState(false)
+  useEffect(() => { setProbe(new URLSearchParams(location.search).has('perf')) }, [])
 
   const [current, setCurrent] = useState<Video | null>(null)
   const [playing, setPlaying] = useState(false)
@@ -724,7 +727,8 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
   return (
     <div className="h-dvh overflow-y-auto overflow-x-hidden" style={{ background: 'var(--bg)' }}>
       <audio data-player playsInline preload="auto" style={{ position: 'absolute', width: 0, height: 0, opacity: 0, pointerEvents: 'none' }} />
-      <div className="fixed top-0 inset-x-0 z-20 glass" style={{ height: 'env(safe-area-inset-top)' }} />
+      <div className="fixed top-0 inset-x-0 z-20 bar" style={{ height: 'env(safe-area-inset-top)' }} />
+      {probe && <PerfProbe />}
 
       <HomeView hydrated={hydrated} videos={videos} details={videoDetails} favorites={favorites} notes={notes}
         currentId={current?.id ?? null} playing={shownPlaying} stats={homeStats} channels={channels}

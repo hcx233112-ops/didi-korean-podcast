@@ -388,3 +388,26 @@ test('closing the search box clears its filter', async ({ page }) => {
   await page.getByRole('button', { name: '收起搜索' }).click()
   await expect(page.getByRole('button', { name: '播放 First episode', exact: true })).toBeVisible()
 })
+
+test('only the mini player is frosted over the scrolling library', async ({ page }) => {
+  await page.goto('/')
+  await page.getByRole('button', { name: '播放 First episode', exact: true }).click()
+  await expect(page.getByRole('button', { name: '打开播放器' })).toBeVisible()
+  // iOS re-blurs every frosted layer on each scrolled frame; the bars that stay put are solid.
+  const frosted = await page.evaluate(() => [...document.querySelectorAll('body *')].filter(el => {
+    const style = getComputedStyle(el)
+    return (style.backdropFilter || style.getPropertyValue('-webkit-backdrop-filter') || 'none') !== 'none'
+  }).length)
+  expect(frosted).toBe(1)
+})
+
+test('the ?perf probe shows the frame rate and switches suspected costs off', async ({ page }) => {
+  await page.goto('/?perf')
+  const probe = page.getByRole('region', { name: '性能检测' })
+  await expect(probe).toContainText(/\d+ fps/)
+  await probe.getByRole('button', { name: '关毛玻璃' }).click()
+  await expect(probe.getByRole('button', { name: '关毛玻璃' })).toHaveAttribute('aria-pressed', 'true')
+  expect(await page.evaluate(() => document.documentElement.classList.contains('perf-noglass'))).toBe(true)
+  await page.goto('/')
+  await expect(page.getByRole('region', { name: '性能检测' })).toHaveCount(0)
+})
