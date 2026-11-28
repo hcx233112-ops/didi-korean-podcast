@@ -318,7 +318,7 @@ export const HomeView = memo(function HomeView(props: Props) {
           {searching && (
             <div className="px-5 pt-3">
               <input autoFocus aria-label="搜索节目标题" value={query} onChange={e => setQuery(e.target.value)} placeholder="搜索标题…"
-                className="w-full px-4 py-2.5 rounded-xl text-[15px] outline-none" style={{ background: 'var(--surface-2)', color: 'var(--text)' }} />
+                className="w-full px-4 py-2.5 rounded-xl text-[16px] outline-none" style={{ background: 'var(--surface-2)', color: 'var(--text)' }} />
             </div>
           )}
           {channels.length > 1 && (

@@ -814,7 +814,7 @@ export default function PodcastApp({ initialVideos }: { initialVideos: Record<st
       {sheet === 'note' && current && (
         <Sheet title="备注" closing={closingSheet} onClose={closeSheet} z={80}>
           <textarea aria-label="节目备注" value={noteText} onChange={e => setNoteText(e.target.value)} placeholder="记下这一期的想法、生词…" rows={4}
-            className="w-full px-4 py-3 rounded-2xl text-[15px] resize-none outline-none" style={{ background: 'var(--surface-2)', color: 'var(--text)' }} />
+            className="w-full px-4 py-3 rounded-2xl text-[16px] resize-none outline-none" style={{ background: 'var(--surface-2)', color: 'var(--text)' }} />
           <div className="flex gap-3 mt-3">
             {notes[current.id] && (
               <button className="tap flex-1 py-3 rounded-2xl font-semibold" style={{ background: 'var(--surface-2)', color: 'var(--text-2)' }}

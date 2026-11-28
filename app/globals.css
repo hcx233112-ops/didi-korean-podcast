@@ -16,11 +16,12 @@
 }
 
 * { -webkit-tap-highlight-color: transparent; }
-html, body { background: var(--bg); }
+/* The page scrolls now: no pull-to-refresh reload cutting off playback, and no width jump when a sheet locks it. */
+html, body { background: var(--bg); overscroll-behavior: none; }
+html { scrollbar-gutter: stable; }
 body {
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Apple SD Gothic Neo", sans-serif;
-  overscroll-behavior: none;
   -webkit-font-smoothing: antialiased;
 }
 
